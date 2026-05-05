@@ -24,8 +24,8 @@ This is a one-time step per service. See the [official docs](https://clickhouse.
 ### Step 2: Clone and configure
 
 ```bash
-git clone https://github.com/ClickHouse/ai-migration-playground.git
-cd ai-migration-playground
+git clone https://github.com/ClickHouse/ai-migration-assistant.git
+cd ai-migration-assistant
 make setup
 ```
 
