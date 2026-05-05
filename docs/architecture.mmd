@@ -1,0 +1,73 @@
+%%{init: {"theme": "base", "themeVariables": {
+  "primaryColor": "#e8f4fd",
+  "primaryBorderColor": "#2196F3",
+  "secondaryColor": "#e8f5e9",
+  "tertiaryColor": "#fff8e1",
+  "background": "#ffffff",
+  "fontFamily": "Segoe UI, Arial, sans-serif",
+  "fontSize": "14px"
+}}}%%
+
+flowchart TB
+    partner(["👤 Partner Browser\nlocalhost:3080"])
+    migrate["🐍 migrate.py\n(runs on host)"]
+
+    subgraph docker["🐳  Docker — playground-net"]
+        direction TB
+
+        subgraph chat["Chat UI"]
+            librechat["LibreChat"]
+            mongo[("MongoDB")]
+            librechat --- mongo
+        end
+
+        subgraph mcp_local["Source MCP Servers"]
+            pg_mcp["postgres-mcp\n:8001"]
+            ch_oss_mcp["clickhouse-oss-mcp\n:8002"]
+        end
+
+        subgraph src_db["Source Databases"]
+            pg[("PostgreSQL 16\necommerce")]
+            ch_oss[("ClickHouse OSS\nanalytics")]
+        end
+    end
+
+    subgraph cloud["☁️  Cloud"]
+        direction TB
+        llm["LLM Provider\nAnthropic · OpenAI · Gemini"]
+
+        subgraph ch_mcps["ClickHouse Cloud MCPs"]
+            ch_cloud_mcp["clickhouse-cloud\nmcp.clickhouse.cloud"]
+            ch_docs_mcp["clickhouse-docs"]
+        end
+
+        ch_cloud[("ClickHouse Cloud\nmigration_target")]
+    end
+
+    partner -->|"HTTP"| librechat
+    librechat -->|"API key"| llm
+
+    librechat <-->|"SSE"| pg_mcp
+    librechat <-->|"SSE"| ch_oss_mcp
+    pg_mcp <-->  pg
+    ch_oss_mcp <--> ch_oss
+
+    librechat <-->|"OAuth · HTTPS"| ch_cloud_mcp
+    librechat <-->|"HTTPS"| ch_docs_mcp
+    ch_cloud_mcp <--> ch_cloud
+
+    migrate -->|"reads"| pg
+    migrate -->|"reads"| ch_oss
+    migrate -->|"HTTPS write"| ch_cloud
+
+    classDef cloudBox  fill:#dbeafe,stroke:#3b82f6,stroke-width:1.5px,color:#1e3a5f
+    classDef dockerBox fill:#dcfce7,stroke:#22c55e,stroke-width:1.5px,color:#14532d
+    classDef dbNode    fill:#f3e8ff,stroke:#9333ea,stroke-width:1.5px,color:#3b0764
+    classDef mcpNode   fill:#fef9c3,stroke:#ca8a04,stroke-width:1.5px,color:#713f12
+    classDef hostNode  fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#0f172a
+
+    class ch_cloud,llm,ch_cloud_mcp,ch_docs_mcp cloudBox
+    class librechat,mongo dockerBox
+    class pg,ch_oss dbNode
+    class pg_mcp,ch_oss_mcp mcpNode
+    class partner,migrate hostNode

@@ -1,0 +1,178 @@
+# No top-level "version" key — deprecated in Docker Compose v2 (Compose spec)
+
+services:
+  # ── Source Database ──────────────────────────────────────────
+  postgres:
+    build: ./sources/postgres/docker
+    environment:
+      POSTGRES_DB: ecommerce
+      POSTGRES_USER: playground
+      POSTGRES_PASSWORD: playground
+      DATASET_SIZE: ${DATASET_SIZE:-medium}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./sources/postgres/docker/init-data:/docker-entrypoint-initdb.d
+      - ./sources/postgres/docker/pg-config/postgresql.conf:/etc/postgresql/postgresql.conf
+      - pg-data:/var/lib/postgresql/data
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U playground -d ecommerce"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - playground-net
+
+  # ── ClickHouse OSS (Source Database) ────────────────────────
+  clickhouse-oss:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"   # HTTP interface
+      - "9000:9000"   # Native protocol
+    volumes:
+      - ./sources/clickhouse-oss/docker/init-data:/docker-entrypoint-initdb.d
+      - ./sources/clickhouse-oss/docker/users.d/playground-network.xml:/etc/clickhouse-server/users.d/playground-network.xml
+      - ch-oss-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - playground-net
+
+  # ── ClickHouse OSS MCP Server ────────────────────────────────
+  # mcp-clickhouse Python package served over SSE transport
+  clickhouse-oss-mcp:
+    build: ./sources/clickhouse-oss/docker/mcp
+    environment:
+      CLICKHOUSE_HOST: clickhouse-oss
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DATABASE: analytics
+      CLICKHOUSE_SECURE: "false"
+      CLICKHOUSE_ALLOW_WRITE_ACCESS: "true"
+      CLICKHOUSE_MCP_SERVER_TRANSPORT: sse
+      CLICKHOUSE_MCP_BIND_HOST: "0.0.0.0"
+      CLICKHOUSE_MCP_BIND_PORT: "8000"
+      CLICKHOUSE_MCP_AUTH_DISABLED: "true"
+    ports:
+      - "8002:8000"
+    depends_on:
+      clickhouse-oss:
+        condition: service_healthy
+    networks:
+      - playground-net
+
+  # ── Postgres MCP Server ──────────────────────────────────────
+  postgres-mcp:
+    image: crystaldba/postgres-mcp
+    environment:
+      DATABASE_URI: "postgresql://playground:playground@postgres:5432/ecommerce"
+    command: ["--access-mode=unrestricted", "--transport=sse"]
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - playground-net
+
+
+  # ── ClickHouse Cloud Write MCP Server ───────────────────────
+  # mcp-clickhouse + clickhouse-client CLI pointed at ClickHouse Cloud.
+  # Provides write access (DDL + INSERT) that the managed mcp.clickhouse.cloud
+  # server does not support. Credentials come from .env.
+  clickhouse-cloud-write-mcp:
+    build: ./docker/clickhouse-cloud-write-mcp
+    environment:
+      CLICKHOUSE_HOST: ${CLICKHOUSE_CLOUD_HOST:-}
+      CLICKHOUSE_PORT: "8443"
+      CLICKHOUSE_USER: ${CLICKHOUSE_CLOUD_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_CLOUD_PASSWORD:-}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_CLOUD_DATABASE:-default}
+      CLICKHOUSE_SECURE: "true"
+      CLICKHOUSE_VERIFY: "false"
+      CLICKHOUSE_ALLOW_WRITE_ACCESS: "true"
+      CLICKHOUSE_MCP_SERVER_TRANSPORT: sse
+      CLICKHOUSE_MCP_BIND_HOST: "0.0.0.0"
+      CLICKHOUSE_MCP_BIND_PORT: "8000"
+      CLICKHOUSE_MCP_AUTH_DISABLED: "true"
+    ports:
+      - "8003:8000"
+    networks:
+      - playground-net
+
+  # ── MongoDB (LibreChat dependency) ───────────────────────────
+  mongodb:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - playground-net
+
+  # ── LibreChat (Chat UI) ──────────────────────────────────────
+  librechat:
+    image: ghcr.io/danny-avila/librechat:latest
+    ports:
+      - "3080:3080"
+    env_file:
+      - .env
+    environment:
+      MONGO_URI: "mongodb://mongodb:27017/LibreChat"
+      HOST: "0.0.0.0"
+      NODE_ENV: production
+      ALLOW_REGISTRATION: "true"
+    volumes:
+      - ./librechat/librechat.yaml:/app/librechat.yaml
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      postgres-mcp:
+        condition: service_started
+      clickhouse-oss-mcp:
+        condition: service_started
+      clickhouse-cloud-write-mcp:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - playground-net
+
+  # ── LibreChat Init — creates default user on first run ───────
+  librechat-init:
+    image: curlimages/curl:latest
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        curl -sf -X POST http://librechat:3080/api/auth/register \
+          -H 'Content-Type: application/json' \
+          -d '{"name":"Playground User","email":"admin@playground.local","username":"playground","password":"playground","confirm_password":"playground"}' \
+          && echo '✅ Default user ready: admin@playground.local / playground' \
+          || echo 'ℹ️  User already exists — skipping'
+    depends_on:
+      librechat:
+        condition: service_healthy
+    networks:
+      - playground-net
+
+volumes:
+  pg-data:
+  ch-oss-data:
+  mongo-data:
+
+networks:
+  playground-net:
+    driver: bridge

@@ -1,0 +1,7 @@
+.env
+agent-skills/
+docs/superpowers/
+*.pyc
+__pycache__/
+.DS_Store
+docs/demo-script.md

@@ -1,0 +1,12 @@
+<clickhouse>
+  <users>
+    <default>
+      <!-- Replace the default localhost-only restriction so the MCP container
+           (on the Docker network) and the host can connect without a password.
+           Safe for this playground — do not use in production. -->
+      <networks replace="replace">
+        <ip>::/0</ip>
+      </networks>
+    </default>
+  </users>
+</clickhouse>
