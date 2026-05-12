@@ -8,12 +8,13 @@ A self-contained Docker Compose environment for hands-on AI-assisted database mi
 
 ## Migration Sources
 
-Two independent migration scenarios are included — each with its own dataset, guide, and agent system prompt:
+Three independent migration scenarios are included — each with its own dataset, guide, and pre-built LibreChat agent:
 
 | Source | Dataset | Guide |
 |---|---|---|
 | **PostgreSQL → ClickHouse Cloud** | E-commerce platform (orders, events, sessions) | [sources/postgres/GUIDE.md](sources/postgres/GUIDE.md) |
 | **ClickHouse OSS → ClickHouse Cloud** | Web analytics platform (pageviews, sessions, conversions) | [sources/clickhouse-oss/GUIDE.md](sources/clickhouse-oss/GUIDE.md) |
+| **Snowflake → ClickHouse Cloud** | TPC-H + Snowflake-specific augmentations (VARIANT, TIMESTAMP_TZ, Stream, Dynamic Table, Clustering Key); partner-provided Snowflake account | [sources/snowflake/GUIDE.md](sources/snowflake/GUIDE.md) |
 
 Want to contribute a new dataset or database engine? See **[docs/adding-a-source.md](docs/adding-a-source.md)**.
 
@@ -26,6 +27,8 @@ Want to contribute a new dataset or database engine? See **[docs/adding-a-source
 | Postgres MCP server | Gives the AI agent full access to the Postgres source |
 | ClickHouse OSS | Source DB — pre-loaded web analytics OLAP dataset |
 | ClickHouse OSS MCP server | Gives the AI agent full access to the ClickHouse OSS source |
+| Snowflake MCP server | Read-only access to a partner-provided Snowflake account (TPC-H + Snowflake-specific augmentations); opt-in via `make up-snowflake` |
+| Migration Runner | In-chat Python sandbox — agent runs migration scripts directly, no local Python required |
 | LibreChat | Provider-agnostic chat UI — bring your own API key |
 
 The below components are part of the **ClickHouse Cloud**
@@ -85,24 +88,18 @@ Open **https://localhost** in your browser (accept the self-signed certificate w
 
 ## Using the playground
 
-1. Sign in at **https://localhost** with `admin@playground.local` / `playground`
-2. **Select a model** from the dropdown in the top bar — choose Claude, Gemini, or GPT-4. The agent will not respond correctly until a model is explicitly selected.
-3. **Enable MCP servers** by clicking the MCP icon in the chat toolbar. This step is required — the agent's migration knowledge (system prompt) is only injected when the MCP servers are active. Enable the servers for your chosen migration source:
-
-   **PostgreSQL → ClickHouse Cloud:**
-   - `postgres-source` — source Postgres database
-   - `clickhousectl` — ClickHouse Cloud (read + write, DDL + INSERT)
-   - `clickhouse-docs` — ClickHouse documentation
-
-   **ClickHouse OSS → ClickHouse Cloud:**
-   - `clickhouse-oss-source` — source ClickHouse OSS database
-   - `clickhousectl` — ClickHouse Cloud (read + write, DDL + INSERT)
-   - `clickhouse-docs` — ClickHouse documentation
-
-4. Follow the guide for your chosen source:
+1. Sign in at **https://localhost** with `admin@playground.local` / `playground`.
+2. **Pick the agent that matches your source.** The agent dropdown lists three pre-built agents, each with the right MCPs and migration prompt already attached — no model toggling or MCP-checkbox wrangling required:
+   - `Postgres → ClickHouse Cloud`
+   - `Snowflake → ClickHouse Cloud` (requires `make up-snowflake` for the source MCP to be reachable)
+   - `ClickHouse OSS → ClickHouse Cloud`
+3. Follow the guide for that source:
    - **Postgres:** [sources/postgres/GUIDE.md](sources/postgres/GUIDE.md)
+   - **Snowflake:** [sources/snowflake/GUIDE.md](sources/snowflake/GUIDE.md)
    - **ClickHouse OSS:** [sources/clickhouse-oss/GUIDE.md](sources/clickhouse-oss/GUIDE.md)
-5. Use the copy-paste prompts in the corresponding `prompts/` directory for each phase
+4. Use the copy-paste prompts in the corresponding `prompts/` directory for each phase.
+
+> **Want a different model per agent?** Set `AGENT_PROVIDER_<SOURCE>` / `AGENT_MODEL_<SOURCE>` in `.env` (e.g. `AGENT_MODEL_SNOWFLAKE=gpt-4o`) before first start, or use the LibreChat agent-settings UI to change a single agent's model afterward. To re-apply env changes, run `make reset-agent`.
 
 ## Dataset sizes
 
@@ -148,11 +145,12 @@ The agent's behaviour is controlled by a set of modular instruction files:
 
 | File | Purpose |
 |---|---|
-| [librechat/clickhouse-cloud-instructions.md](librechat/clickhouse-cloud-instructions.md) | Base rules applied to all migration sources |
-| [librechat/sources/postgres-instructions.md](librechat/sources/postgres-instructions.md) | Postgres-specific migration rules |
-| [librechat/sources/clickhouse-oss-instructions.md](librechat/sources/clickhouse-oss-instructions.md) | ClickHouse OSS-specific migration rules |
+| [librechat/clickhouse-cloud-instructions.md](librechat/clickhouse-cloud-instructions.md) | Base rules + best-practices, injected into `mcpServers.clickhousectl.serverInstructions` (shared by all three agents) |
+| [librechat/sources/postgres-instructions.md](librechat/sources/postgres-instructions.md) | Postgres-specific rules, injected into `mcpServers.postgres-source.serverInstructions` |
+| [librechat/sources/snowflake-instructions.md](librechat/sources/snowflake-instructions.md) | Snowflake-specific rules, injected into `mcpServers.snowflake-source.serverInstructions` |
+| [librechat/sources/clickhouse-oss-instructions.md](librechat/sources/clickhouse-oss-instructions.md) | ClickHouse OSS-specific rules, injected into `mcpServers.clickhouse-oss-source.serverInstructions` |
 
-All files are combined with the ClickHouse best practices from `agent-skills/` and injected into `librechat/librechat.yaml` on every `make setup` run. The `serverInstructions` field in `librechat.yaml` is a build artifact — do not edit it directly.
+Each pre-built agent attaches exactly the MCPs for its source, so it transparently receives only the relevant `serverInstructions` — no per-agent prompt is set. `make setup` rebuilds the injected blocks idempotently. Don't edit anything below the `--- Migration Rules (auto-injected …) ---` marker in `librechat.yaml`; the MCP-purpose blurb above the marker IS hand-editable.
 
 **To add a new migration source:** see **[docs/adding-a-source.md](docs/adding-a-source.md)** for the full walkthrough — Docker service, MCP wiring, and system prompt authoring.
 
@@ -171,19 +169,27 @@ docker compose restart librechat
 ## Commands
 
 ```bash
-make setup     # first-time setup (submodules + agent skills + .env)
-make up        # start the playground
-make down      # stop without removing data
-make reset     # destroy volumes and start fresh
-make health    # check all services are healthy
-make logs      # tail all service logs
-make diagram   # regenerate docs/architecture.png from docs/architecture.mmd
+make setup               # first-time setup (submodules + agent skills + .env)
+make up                  # start the playground (Postgres + ClickHouse OSS sources)
+make up-snowflake        # also start the Snowflake source MCP (needs SNOWFLAKE_* in .env)
+make snowflake-setup     # set up MIGRATION_DEMO.RETAIL workload in existing Snowflake (Path A)
+make snowflake-provision # provision a fresh Snowflake demo env with Terraform (Path B)
+make down                # stop without removing data
+make reset               # destroy volumes and start fresh
+make reset-agent         # delete + recreate the three pre-built agents (e.g. after changing AGENT_PROVIDER/AGENT_MODEL in .env)
+make health              # check all services are healthy
+make migration-status    # check progress of a running migration script (target row counts)
+make logs                # tail all service logs
+make diagram             # regenerate docs/architecture.png from docs/architecture.mmd
 ```
 
 ## Troubleshooting
 
 **MCP servers not showing in LibreChat:**
-Verify `interface.mcpServers.use: true` is set in `librechat/librechat.yaml`.
+Verify `interface.mcpServers.use: true` is set in `librechat/librechat.yaml`. Each pre-built agent attaches its MCPs automatically — if a picked agent has no MCPs in its panel, run `make reset-agent` to repair it.
+
+**Agent not appearing in the dropdown:**
+`docker compose logs librechat-init` should report `✅ Created '<Agent name>'` (or `already configured — skipping`). On the very first `make up`, init runs after LibreChat reports healthy — give it ~10 seconds, then refresh the page.
 
 **Postgres seed takes too long:**
 Set `DATASET_SIZE=small` in `.env`, run `make reset`.

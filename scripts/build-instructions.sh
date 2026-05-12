@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
-# Builds the clickhousectl serverInstructions in librechat.yaml by combining:
-#   1. librechat/clickhouse-cloud-instructions.md  — base rules (generic, all sources)
-#   2. librechat/sources/*.md                      — source-specific rules (one file per source)
-#   3. agent-skills/skills/clickhouse-best-practices/AGENTS.md — ClickHouse best practices
+# Builds serverInstructions in librechat.yaml for each MCP server:
 #
-# To add a new source: create librechat/sources/<source-name>-instructions.md
-# Run via: make setup  (or manually: bash scripts/build-instructions.sh)
+#   clickhousectl.serverInstructions =
+#       librechat/clickhouse-cloud-instructions.md                       (base, all sources)
+#     + agent-skills/skills/clickhouse-best-practices/AGENTS.md          (best practices)
+#
+#   <id>-source.serverInstructions = <existing blurb in librechat.yaml>
+#     + librechat/sources/<id>-instructions.md                           (source-specific rules)
+#
+# The source-MCP blurb is preserved (it's MCP-purpose config, not migration rules);
+# the rules are appended below a marker so re-runs are idempotent.
+#
+# To add a new source:
+#   1. Create librechat/sources/<id>-instructions.md
+#   2. Add mcpServers.<id>-source entry in librechat/librechat.yaml
+#   3. Run: make setup
 set -euo pipefail
 
-TEMPLATE_FILE="librechat/clickhouse-cloud-instructions.md"
+BASE_FILE="librechat/clickhouse-cloud-instructions.md"
 SOURCES_DIR="librechat/sources"
 SKILLS_FILE="agent-skills/skills/clickhouse-best-practices/AGENTS.md"
 LOCAL_SKILLS="${HOME}/.agents/skills/clickhouse-best-practices/AGENTS.md"
 LIBRECHAT_YAML="librechat/librechat.yaml"
+RULES_MARKER="--- Migration Rules (auto-injected, do not edit below) ---"
 
 # ── Resolve agent-skills path ────────────────────────────────────────────────
 if [ -f "$SKILLS_FILE" ]; then
@@ -37,36 +47,66 @@ if ! command -v yq &>/dev/null; then
     exit 0
 fi
 
-if [ ! -f "$TEMPLATE_FILE" ]; then
-    echo "❌ Template not found: $TEMPLATE_FILE"
+if [ ! -f "$BASE_FILE" ]; then
+    echo "❌ Base prompt not found: $BASE_FILE"
+    exit 1
+fi
+if [ ! -f "$LIBRECHAT_YAML" ]; then
+    echo "❌ librechat.yaml not found: $LIBRECHAT_YAML"
     exit 1
 fi
 
-# ── Collect source-specific instructions ────────────────────────────────────
-SOURCES_CONTENT=""
-if [ -d "$SOURCES_DIR" ]; then
-    for f in "$SOURCES_DIR"/*.md; do
-        [ -f "$f" ] || continue
-        source_id=$(basename "$f" | sed 's/-instructions\.md$//')
-        echo "  source:       $f ($(wc -l < "$f") lines)"
-        SOURCES_CONTENT+=$'\n\n---\n\n'
-        SOURCES_CONTENT+="## Source-Specific Rules: ${source_id}"$'\n\n'
-        SOURCES_CONTENT+="$(cat "$f")"$'\n'
-    done
-fi
-
-# ── Combine base + sources + agent skills ────────────────────────────────────
-echo "Building serverInstructions from:"
-echo "  base:         $TEMPLATE_FILE ($(wc -l < "$TEMPLATE_FILE") lines)"
-
+# ── 1. Inject base + best-practices into clickhousectl ───────────────────────
+echo
+echo "Injecting clickhousectl.serverInstructions:"
+echo "  base:           $BASE_FILE ($(wc -l < "$BASE_FILE") lines)"
 if [ -n "$SKILLS_FILE" ]; then
     echo "  best-practices: $SKILLS_FILE ($(wc -l < "$SKILLS_FILE") lines)"
-    export YQ_VALUE="$(cat "$TEMPLATE_FILE")${SOURCES_CONTENT}$(cat "$SKILLS_FILE")"
+    export YQ_VALUE="$(cat "$BASE_FILE")"$'\n\n'"$(cat "$SKILLS_FILE")"
 else
-    export YQ_VALUE="$(cat "$TEMPLATE_FILE")${SOURCES_CONTENT}"
+    export YQ_VALUE="$(cat "$BASE_FILE")"
+fi
+yq -i '.mcpServers.clickhousectl.serverInstructions = strenv(YQ_VALUE)' "$LIBRECHAT_YAML"
+echo "  ✅ clickhousectl ($(printf '%s' "$YQ_VALUE" | wc -c) chars)"
+
+# ── 2. Inject each source's rules into its source MCP ────────────────────────
+echo
+echo "Injecting per-source rules:"
+if [ ! -d "$SOURCES_DIR" ]; then
+    echo "  (no $SOURCES_DIR directory — skipping)"
+    exit 0
 fi
 
-yq -i '.mcpServers.clickhousectl.serverInstructions = strenv(YQ_VALUE)' "$LIBRECHAT_YAML"
+shopt -s nullglob
+for src_file in "$SOURCES_DIR"/*-instructions.md; do
+    source_id=$(basename "$src_file" | sed 's/-instructions\.md$//')
+    mcp_key="${source_id}-source"
 
-TOTAL_CHARS=${#YQ_VALUE}
-echo "✅ serverInstructions injected ($TOTAL_CHARS chars total)"
+    # Confirm the corresponding MCP is declared in librechat.yaml. Without
+    # this entry the yq assignment would silently create an orphan key that
+    # LibreChat ignores — fail loudly instead.
+    if ! yq -e ".mcpServers.\"${mcp_key}\"" "$LIBRECHAT_YAML" >/dev/null 2>&1; then
+        echo "  ❌ $src_file: no .mcpServers.${mcp_key} entry in $LIBRECHAT_YAML"
+        echo "     Add an entry for the ${mcp_key} MCP server, or rename the file."
+        exit 1
+    fi
+
+    # Read current serverInstructions (the MCP-purpose blurb), strip any
+    # previously appended rules block, then re-append. This keeps re-runs
+    # idempotent without growing the field on every build.
+    export MCP_KEY="$mcp_key"
+    blurb=$(yq -r '.mcpServers[strenv(MCP_KEY)].serverInstructions // ""' "$LIBRECHAT_YAML")
+    blurb_only="${blurb%%${RULES_MARKER}*}"
+    # Trim trailing whitespace/newlines from the blurb so the marker spacing
+    # is consistent.
+    blurb_only="${blurb_only%$'\n'}"
+    blurb_only="${blurb_only%$'\n'}"
+
+    rules=$(cat "$src_file")
+    export YQ_VALUE="${blurb_only}"$'\n\n'"${RULES_MARKER}"$'\n\n'"${rules}"
+    yq -i '.mcpServers[strenv(MCP_KEY)].serverInstructions = strenv(YQ_VALUE)' "$LIBRECHAT_YAML"
+    echo "  ✅ ${mcp_key} ← ${src_file} ($(wc -l < "$src_file") lines, total $(printf '%s' "$YQ_VALUE" | wc -c) chars)"
+done
+
+echo
+echo "✅ All serverInstructions injected."

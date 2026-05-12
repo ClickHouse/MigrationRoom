@@ -208,7 +208,7 @@ mcpServers:
 
 The `serverInstructions` field describes *this MCP server's* role and data. Migration rules go in the source-specific system prompt file — see Step 4.
 
-> **Do not run `yq` manually** to update `librechat.yaml` — the build script only manages the `clickhousectl` `serverInstructions`. All other edits to `librechat.yaml` are made directly.
+> **Do not run `yq` manually** to update `librechat.yaml`'s injected blocks — `build-instructions.sh` manages everything below the `--- Migration Rules (auto-injected, do not edit below) ---` marker on each `<id>-source` MCP, plus the entirety of `clickhousectl.serverInstructions`. Hand-edit only the blurb above the marker on source MCPs, plus any non-`serverInstructions` fields.
 
 ---
 
@@ -297,10 +297,12 @@ docker compose up -d
 `make setup` runs `scripts/build-instructions.sh`, which re-assembles the agent system prompt and injects it into `librechat.yaml`. LibreChat picks up the new config on the next start.
 
 Verify in LibreChat:
-1. Click the MCP icon — `<source-name>-source` should appear in the list
-2. Enable it and ask: *"List all tables in the \<db-name\> database"*
+1. The agent dropdown should now include **`<Source Display Name> → ClickHouse Cloud`**.
+2. Pick it and ask: *"List all tables in the \<db-name\> database"* — `<source-name>-source` should be in the agent's attached MCPs (visible in the agent's tool panel) and respond.
 
 For cloud sources, confirm credentials are set in `.env` before running `make up`.
+
+> **Heads up:** adding a source also requires adding it to the `agents` array inside `docker-compose.yml`'s `librechat-init` `command:` block (so a per-source agent gets created) and to `librechat.yaml`'s `mcpSettings.allowedDomains` (so LibreChat will initialize the new MCP container). Run `make reset-agent` afterward to materialize the new agent.
 
 ---
 
@@ -308,58 +310,48 @@ For cloud sources, confirm credentials are set in `.env` before running `make up
 
 Understanding the injection pipeline helps when debugging unexpected agent behaviour.
 
-### The three layers
+### How rules are routed
 
-The agent's `serverInstructions` for the `clickhousectl` MCP entry is assembled from three layers in order:
+Each MCP server in `librechat.yaml` has its own `serverInstructions`. Per-source agents attach only their source's MCP + the shared target MCPs, so each agent receives only the rules it needs:
 
 ```
-Layer 1 — Base rules (generic, applies to all sources)
-  librechat/clickhouse-cloud-instructions.md
-  ↓
-Layer 2 — Source-specific rules (one file per source, all concatenated)
-  librechat/sources/postgres-instructions.md
-  librechat/sources/clickhouse-oss-instructions.md
-  librechat/sources/<source-name>-instructions.md
-  ...
-  ↓
-Layer 3 — ClickHouse best practices (from agent-skills submodule)
-  agent-skills/skills/clickhouse-best-practices/AGENTS.md
-  ↓
-Combined text → injected as serverInstructions
-             for the clickhousectl MCP in librechat/librechat.yaml
+librechat/clickhouse-cloud-instructions.md  ─┐
+agent-skills/.../AGENTS.md                  ─┴─→  mcpServers.clickhousectl.serverInstructions
+                                                 (shared by all agents)
+
+librechat/sources/postgres-instructions.md  ───→  mcpServers.postgres-source.serverInstructions
+librechat/sources/snowflake-instructions.md ───→  mcpServers.snowflake-source.serverInstructions
+librechat/sources/<id>-instructions.md      ───→  mcpServers.<id>-source.serverInstructions
 ```
 
 ### The build script
 
-`scripts/build-instructions.sh` does the following:
+`scripts/build-instructions.sh` does the following on every `make setup`:
 
-1. Reads `librechat/clickhouse-cloud-instructions.md` (Layer 1)
-2. Globs `librechat/sources/*.md` alphabetically and concatenates all files (Layer 2)
-3. Appends `agent-skills/skills/clickhouse-best-practices/AGENTS.md` (Layer 3)
-4. Exports the combined string as `$YQ_VALUE`
-5. Runs:
-   ```bash
-   yq -i '.mcpServers.clickhousectl.serverInstructions = strenv(YQ_VALUE)' \
-     librechat/librechat.yaml
-   ```
+1. Sets `mcpServers.clickhousectl.serverInstructions` to `clickhouse-cloud-instructions.md` + `agent-skills/.../AGENTS.md` (fully build-managed).
+2. For each `librechat/sources/<id>-instructions.md`, **appends** the file below a `--- Migration Rules (auto-injected, do not edit below) ---` marker in `mcpServers.<id>-source.serverInstructions`. The hand-edited MCP-purpose blurb above the marker is preserved; re-runs are idempotent. The build fails loudly if the matching `mcpServers.<id>-source` key is missing.
 
-The `serverInstructions` field in `librechat.yaml` is a **build artifact** — it is overwritten on every `make setup`. Never edit it directly; edit the source markdown files instead.
+The text BELOW the marker is a **build artifact** — never edit it directly; edit the source markdown files instead.
 
 ### Where the prompt ends up
 
-LibreChat sends the `serverInstructions` content to the LLM as part of the system prompt when the `clickhousectl` MCP is active. The agent sees all three layers as a single continuous block of text — there is no runtime layering.
+At chat time, LibreChat assembles the system prompt from the `serverInstructions` of every MCP attached to the agent. Because each per-source agent attaches only its own `<id>-source` MCP plus the shared `clickhousectl`, `clickhouse-docs`, and `migration-runner`, it sees only its own source's rules — no cross-source bleed. No agent-level `instructions` field is used.
 
-**All source-specific rules are always active** — the agent sees rules for every source you have added, regardless of which source is currently in use. This is by design: it keeps the build simple (no runtime source detection). Scope each rule clearly (e.g. *"This section applies when the SOURCE is Snowflake"*) so the agent can self-select the relevant section.
+Scope new rule files clearly (e.g. *"This section applies when the SOURCE is Snowflake"*) for readability, but the routing is structural — a Postgres agent never sees Snowflake rules.
 
 ### Debugging the assembled prompt
 
-To inspect the current assembled prompt without restarting anything:
+To inspect the current `serverInstructions` for any MCP without restarting anything:
 
 ```bash
-# Print the current serverInstructions value
+# Shared target prompt (base + best-practices)
 yq '.mcpServers["clickhousectl"].serverInstructions' librechat/librechat.yaml
 
-# Check the character count after a rebuild
+# A source's prompt (blurb + auto-injected rules below the marker)
+yq '.mcpServers["postgres-source"].serverInstructions' librechat/librechat.yaml
+yq '.mcpServers["<id>-source"].serverInstructions' librechat/librechat.yaml
+
+# Re-run the build (idempotent; per-source char counts are reported)
 bash scripts/build-instructions.sh
 ```
 

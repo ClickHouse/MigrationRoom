@@ -105,6 +105,58 @@ services:
     networks:
       - playground-net
 
+  # ── Snowflake Source MCP ────────────────────────────────────
+  # Read-only Snowflake-Labs/mcp wrapper. Profile-gated because the upstream
+  # server connects to Snowflake at startup and crashes if credentials are
+  # missing or invalid. Partners using the Snowflake source set SNOWFLAKE_*
+  # in .env then run `make up-snowflake` (or `docker compose --profile
+  # snowflake up -d`).
+  snowflake-source:
+    profiles: ["snowflake"]
+    build: ./docker/snowflake-mcp
+    environment:
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-COMPUTE_WH}
+      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
+    ports:
+      - "8004:8000"
+    networks:
+      - playground-net
+
+  # ── Gemini Compatibility Shim ───────────────────────────────────
+  # Proxies snowflake-source and strips JSON Schema fields that Google
+  # Gemini's function-calling API rejects (exclusiveMaximum, $schema,
+  # const, oneOf, allOf, etc.). LibreChat connects to this shim instead
+  # of snowflake-source directly. Profile-gated alongside snowflake-source.
+  snowflake-source-shim:
+    profiles: ["snowflake"]
+    build: ./docker/mcp-gemini-shim
+    environment:
+      UPSTREAM_MCP_URL: "http://snowflake-source:8000/sse"
+      SHIM_NAME: "snowflake-source"
+    ports:
+      - "8014:8000"
+    depends_on:
+      - snowflake-source
+    networks:
+      - playground-net
+
+  # ── Migration Runner ────────────────────────────────────────
+  # Executes Python migration scripts in-chat (via run_python MCP tool)
+  # so the agent can drive end-to-end migrations without asking the
+  # partner to copy code into a local editor.
+  migration-runner:
+    build: ./docker/migration-runner
+    env_file: .env
+    volumes:
+      - migration-workspace:/workspace
+    ports:
+      - "8005:8000"
+    networks:
+      - playground-net
+
   # ── MongoDB (LibreChat dependency) ───────────────────────────
   mongodb:
     image: mongo:7
@@ -150,20 +202,121 @@ services:
     networks:
       - playground-net
 
-  # ── LibreChat Init — creates default user on first run ───────
+  # ── LibreChat Init — registers user and pre-builds per-source agents ───
+  # Built from docker/librechat-init (mongo:7 + curl + jq) so the script can
+  # both call the LibreChat API and patch MongoDB directly. Three v0.8.5
+  # quirks force the direct-Mongo path (see CLAUDE.md):
+  #   1. /api/* requires a browser-ish User-Agent (uaParser middleware)
+  #   2. agent-create Zod schema silently strips `mcpServerNames`
+  #   3. GET /api/agents returns empty (project-ownership filter)
   librechat-init:
-    image: curlimages/curl:latest
+    build: ./docker/librechat-init
     restart: "no"
-    entrypoint: ["/bin/sh", "-c"]
+    env_file: .env
+    environment:
+      MONGO_URI: "mongodb://mongodb:27017/LibreChat"
+      LIBRECHAT_URL: "http://librechat:3080"
+    entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        curl -sf -X POST http://librechat:3080/api/auth/register \
+        set -eo pipefail
+        UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 LibreChatInit/1.0'
+
+        # ── 1. Register playground user ──────────────────────────────────
+        if curl -sf -o /dev/null -X POST "$$LIBRECHAT_URL/api/auth/register" \
+            -H 'Content-Type: application/json' \
+            -H "User-Agent: $$UA" \
+            -d '{"name":"Playground User","email":"admin@playground.local","username":"playground","password":"playground","confirm_password":"playground"}'; then
+          echo "✅ User registered: admin@playground.local / playground"
+        else
+          echo "ℹ️  User already exists — skipping"
+        fi
+
+        # ── 2. Login to obtain JWT (required for /api/agents) ────────────
+        LOGIN_RESP=$$(curl -sf -X POST "$$LIBRECHAT_URL/api/auth/login" \
           -H 'Content-Type: application/json' \
-          -d '{"name":"Playground User","email":"admin@playground.local","username":"playground","password":"playground","confirm_password":"playground"}' \
-          && echo '✅ Default user ready: admin@playground.local / playground' \
-          || echo 'ℹ️  User already exists — skipping'
+          -H "User-Agent: $$UA" \
+          -d '{"email":"admin@playground.local","password":"playground"}') || {
+            echo "❌ Login request failed"; exit 1;
+          }
+        TOKEN=$$(echo "$$LOGIN_RESP" | jq -r '.token // empty')
+        if [ -z "$$TOKEN" ]; then
+          echo "❌ No JWT in login response: $$LOGIN_RESP"
+          exit 1
+        fi
+
+        # ── 3. Provider/model resolution ─────────────────────────────────
+        # Priority: per-source override → global default → auto-detect.
+        default_provider() {
+          if   [ -n "$${ANTHROPIC_API_KEY:-}" ]; then echo anthropic
+          elif [ -n "$${OPENAI_API_KEY:-}" ];    then echo openAI
+          elif [ -n "$${GOOGLE_KEY:-}" ];        then echo google
+          elif [ -n "$${BEDROCK_AWS_ACCESS_KEY_ID:-}" ]; then echo bedrock
+          else echo anthropic
+          fi
+        }
+        default_model() {
+          case "$$1" in
+            anthropic) echo claude-sonnet-4-6 ;;
+            openAI)    echo gpt-4o ;;
+            google)    echo gemini-2.0-flash ;;
+            bedrock)   echo anthropic.claude-3-5-sonnet-20241022 ;;
+            *)         echo claude-sonnet-4-6 ;;
+          esac
+        }
+
+        # ── 4. Per-source agent bootstrap loop ───────────────────────────
+        # Each tuple: source_id | Agent Display Name | ENV_SUFFIX
+        agents=(
+          "postgres|Postgres → ClickHouse Cloud|POSTGRES"
+          "snowflake|Snowflake → ClickHouse Cloud|SNOWFLAKE"
+          "clickhouse-oss|ClickHouse OSS → ClickHouse Cloud|CLICKHOUSE_OSS"
+        )
+        SHARED_MCPS=(clickhousectl clickhouse-docs migration-runner)
+
+        for entry in "$${agents[@]}"; do
+          IFS='|' read -r src_id agent_name env_suffix <<< "$$entry"
+          per_p="AGENT_PROVIDER_$${env_suffix}"
+          per_m="AGENT_MODEL_$${env_suffix}"
+          provider="$${!per_p:-$${AGENT_PROVIDER:-$$(default_provider)}}"
+          model="$${!per_m:-$${AGENT_MODEL:-$$(default_model "$$provider")}}"
+
+          mcp_json="[\"$${src_id}-source\",\"clickhousectl\",\"clickhouse-docs\",\"migration-runner\"]"
+          # `tools` array is what actually loads MCP tools AND triggers
+          # serverInstructions injection at chat time. `mcpServerNames`
+          # alone is just UI metadata in v0.8.5. The `sys__all__sys_mcp_<X>`
+          # marker tells handleTools.js to load all of server X's tools.
+          tools_json="[\"sys__all__sys_mcp_$${src_id}-source\",\"sys__all__sys_mcp_clickhousectl\",\"sys__all__sys_mcp_clickhouse-docs\",\"sys__all__sys_mcp_migration-runner\"]"
+
+          configured=$$(mongosh "$$MONGO_URI" --quiet --eval "db.agents.countDocuments({name: '$$agent_name', mcpServerNames: { \$$all: $$mcp_json }, tools: { \$$all: $$tools_json } })")
+          if [ "$$configured" -ge 1 ]; then
+            echo "ℹ️  '$$agent_name' already configured — skipping"
+            continue
+          fi
+
+          # Remove any half-configured row before creating fresh.
+          mongosh "$$MONGO_URI" --quiet --eval "db.agents.deleteMany({ name: '$$agent_name' })" > /dev/null
+
+          http=$$(curl -s -o /tmp/agent.json -w "%{http_code}" -X POST "$$LIBRECHAT_URL/api/agents" \
+            -H 'Content-Type: application/json' \
+            -H "User-Agent: $$UA" \
+            -H "Authorization: Bearer $$TOKEN" \
+            -d "{\"name\":\"$$agent_name\",\"provider\":\"$$provider\",\"model\":\"$$model\"}")
+          if [ "$$http" != "200" ] && [ "$$http" != "201" ]; then
+            echo "❌ Create failed for '$$agent_name' (HTTP $$http):"
+            cat /tmp/agent.json
+            exit 1
+          fi
+
+          mongosh "$$MONGO_URI" --quiet --eval "db.agents.updateOne({ name: '$$agent_name' }, { \$$set: { mcpServerNames: $$mcp_json, tools: $$tools_json } })" > /dev/null
+          echo "✅ Created '$$agent_name' ($$provider / $$model)"
+        done
+
+        echo "✅ Init complete: $${#agents[@]} agents ensured"
     depends_on:
       librechat:
+        condition: service_healthy
+      mongodb:
         condition: service_healthy
     networks:
       - playground-net
@@ -187,6 +340,7 @@ volumes:
   pg-data:
   ch-oss-data:
   mongo-data:
+  migration-workspace:
 
 networks:
   playground-net:

@@ -5,3 +5,21 @@ docs/superpowers/
 __pycache__/
 .DS_Store
 docs/demo-script.md
+CLAUDE.md
+.claude
+
+# Python virtualenvs
+.venv/
+venv/
+
+# Terraform — never commit real vars, state, or the provider cache
+**/terraform.tfvars
+!**/terraform.tfvars.example
+**/*.tfstate
+**/*.tfstate.backup
+**/.terraform/
+**/.terraform.lock.hcl
+
+# Screenshots that captured env-var dumps from earlier test runs
+images/snowflake/Snipaste_2026-05-12_12-51-02.png
+images/snowflake/Snipaste_2026-05-12_12-59-50.png

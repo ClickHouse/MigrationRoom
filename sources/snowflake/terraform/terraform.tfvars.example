@@ -1,0 +1,5 @@
+snowflake_account = "ORGNAME-ACCOUNTNAME"
+admin_user        = "YOUR_USER"
+admin_password    = "YOUR_PASSWORD"
+admin_role        = "ACCOUNTADMIN"
+warehouse_size    = "X-SMALL"

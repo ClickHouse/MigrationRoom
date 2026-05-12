@@ -1,0 +1,27 @@
+# Snowflake MCP service configuration for the AI Migration Assistant playground.
+# Exposes read-only schema exploration + SELECT queries so the agent can
+# inspect the source database. Writes always go to ClickHouse Cloud via the
+# clickhousectl MCP, never to Snowflake.
+agent_services: []
+search_services: []
+analyst_services: []
+
+other_services:
+  object_manager: true
+  query_manager: true
+  semantic_manager: false
+
+sql_statement_permissions:
+  - Select: true
+  - Describe: true
+  - Use: true
+  - Command: true
+  - Unknown: false
+  - Alter: false
+  - Create: false
+  - Delete: false
+  - Drop: false
+  - Insert: false
+  - Merge: false
+  - Update: false
+  - TruncateTable: false

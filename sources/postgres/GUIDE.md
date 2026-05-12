@@ -33,21 +33,13 @@ make up
 docker compose logs postgres -f   # watch seed progress
 ```
 
-### Step 3: Open LibreChat
+### Step 3: Open LibreChat and pick the Postgres agent
 
 Navigate to **https://localhost** (or `https://<server-ip>` for remote deployments). Accept the self-signed certificate warning. Sign in (`admin@playground.local` / `playground`).
 
-**Select a model** from the dropdown in the top bar (Claude, Gemini, or GPT-4). The agent will not respond correctly until a model is explicitly selected.
+From the agent dropdown, pick **`Postgres → ClickHouse Cloud`**. It ships with model, system prompt, and four MCPs (`postgres-source`, `clickhousectl`, `clickhouse-docs`, `migration-runner`) already attached — no toggling needed.
 
-### Step 4: Enable MCP servers
-
-Click the **MCP** icon in the chat toolbar and enable all three servers below.
-
-> **Important:** this step is required before sending your first message. The agent's migration knowledge (system prompt) is only injected when the MCP servers are active in the conversation. Without them, the model responds as a generic assistant.
-
-- `postgres-source` — source PostgreSQL database
-- `clickhousectl` — ClickHouse Cloud (read + write, DDL + INSERT)
-- `clickhouse-docs` — ClickHouse documentation
+> **Different model?** Set `AGENT_PROVIDER_POSTGRES` / `AGENT_MODEL_POSTGRES` in `.env` and run `make reset-agent`, or change the model in the LibreChat agent-settings panel.
 
 Test connections:
 > "What tables are in the ecommerce Postgres database, and what databases exist in ClickHouse Cloud?"

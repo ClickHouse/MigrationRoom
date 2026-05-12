@@ -1,0 +1,2 @@
+snowflake-connector-python>=3.7
+clickhouse-connect>=0.7
