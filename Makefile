@@ -13,9 +13,16 @@ setup:
 	@# The placeholder is harmless when BigQuery isn't in use; partners using
 	@# BigQuery replace it (or `make bigquery-provision` writes the real key here).
 	@mkdir -p secrets && [ -f secrets/gcp-key.json ] || echo '{}' > secrets/gcp-key.json
+	@# Seed a runtime librechat.yaml so `docker compose up` works even
+	@# before the user has run one of the up* targets. Defaults to empty
+	@# profiles, which strips snowflake-source and bigquery-source.
+	@COMPOSE_PROFILES="" bash scripts/build-librechat-runtime.sh
 	@echo "✅ Setup complete. Run: make up"
 
+up: export COMPOSE_PROFILES :=
 up:
+	@echo "Regenerating librechat.runtime.yaml for active profiles: <none>"
+	@bash scripts/build-librechat-runtime.sh
 	@echo "Pulling images..."
 	docker compose pull
 	@echo "Building custom containers..."
@@ -30,16 +37,19 @@ up:
 	@echo "First run: allow 5–10 min for Postgres to seed (~10M rows)."
 	@echo "Watch seed: docker compose logs postgres -f"
 
+up-snowflake: export COMPOSE_PROFILES := snowflake
 up-snowflake:
+	@echo "Regenerating librechat.runtime.yaml for active profiles: snowflake"
+	@bash scripts/build-librechat-runtime.sh
 	@echo "Pulling images..."
-	docker compose --profile snowflake pull
+	docker compose pull
 	@echo "Building custom containers..."
-	docker compose --profile snowflake build
+	docker compose build
 	@echo "Starting services (including snowflake-source)..."
-	docker compose --profile snowflake up -d
+	docker compose up -d
 	@echo ""
 	@echo "Container status:"
-	@docker compose --profile snowflake ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+	@docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
 	@echo ""
 	@echo "If snowflake-source shows unhealthy, check: docker compose logs snowflake-source"
 	@echo "(SNOWFLAKE_* credentials in .env must be set and valid.)"
@@ -56,14 +66,17 @@ snowflake-provision:
 	@echo ""
 	@echo "Capture the .env block with: cd sources/snowflake/terraform && terraform output -raw env_block"
 
+up-bigquery: export COMPOSE_PROFILES := bigquery
 up-bigquery:
+	@echo "Regenerating librechat.runtime.yaml for active profiles: bigquery"
+	@bash scripts/build-librechat-runtime.sh
 	@echo "Pulling images..."
-	docker compose --profile bigquery pull
+	docker compose pull
 	@echo "Starting services (including bigquery-source)..."
-	docker compose --profile bigquery up -d
+	docker compose up -d
 	@echo ""
 	@echo "Container status:"
-	@docker compose --profile bigquery ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+	@docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
 	@echo ""
 	@echo "If bigquery-source shows unhealthy, check: docker compose logs bigquery-source"
 	@echo "(BIGQUERY_PROJECT and BIGQUERY_KEY_FILE in .env must be set and valid.)"

@@ -33,4 +33,22 @@ docker compose exec -T mongodb mongosh "mongodb://mongodb:27017/LibreChat" --qui
 '
 
 echo "✅ Agents deleted. Re-running librechat-init to recreate…"
+
+# Auto-detect active profiles from currently-running services so the init
+# container recreates the same agent set the partner is actually using.
+# If they had `make up-snowflake` going, we want the Snowflake agent back.
+# Caller can still override by exporting COMPOSE_PROFILES before invoking.
+if [ -z "${COMPOSE_PROFILES:-}" ]; then
+    detected=""
+    running=$(docker compose ps --services --status running 2>/dev/null || true)
+    if grep -q '^snowflake-source$' <<<"$running"; then
+        detected="snowflake"
+    fi
+    if grep -q '^bigquery-source$' <<<"$running"; then
+        detected="${detected:+$detected,}bigquery"
+    fi
+    export COMPOSE_PROFILES="$detected"
+    echo "Detected active profiles: ${COMPOSE_PROFILES:-<none>}"
+fi
+
 docker compose run --rm librechat-init
