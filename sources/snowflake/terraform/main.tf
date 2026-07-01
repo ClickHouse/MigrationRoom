@@ -52,7 +52,7 @@ resource "snowflake_warehouse" "demo" {
   warehouse_size = var.warehouse_size
   auto_suspend   = 60
   auto_resume    = true
-  comment        = "Dedicated warehouse for MigrationHouse demo."
+  comment        = "Dedicated warehouse for MigrationRoom demo."
 }
 
 # Database + schema. The setup_workload.sql script does CREATE IF NOT EXISTS
@@ -60,7 +60,7 @@ resource "snowflake_warehouse" "demo" {
 # script populates them with TPC-H tables.
 resource "snowflake_database" "demo" {
   name    = "MIGRATION_DEMO"
-  comment = "MigrationHouse demo: TPC-H + Snowflake-specific augmentations."
+  comment = "MigrationRoom demo: TPC-H + Snowflake-specific augmentations."
 }
 
 resource "snowflake_schema" "retail" {
@@ -72,7 +72,7 @@ resource "snowflake_schema" "retail" {
 # Role + user dedicated to the demo (limited blast radius).
 resource "snowflake_account_role" "demo" {
   name    = "MIGRATION_DEMO_ROLE"
-  comment = "Read access to MIGRATION_DEMO for the MigrationHouse demo."
+  comment = "Read access to MIGRATION_DEMO for the MigrationRoom demo."
 }
 
 resource "snowflake_grant_privileges_to_account_role" "demo_warehouse" {

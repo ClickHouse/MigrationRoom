@@ -1,4 +1,4 @@
-# Snowflake MCP service configuration for the MigrationHouse playground.
+# Snowflake MCP service configuration for the MigrationRoom playground.
 # Exposes read-only schema exploration + SELECT queries so the agent can
 # inspect the source database. Writes always go to ClickHouse Cloud via the
 # clickhousectl MCP, never to Snowflake.

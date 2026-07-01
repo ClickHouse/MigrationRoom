@@ -1,5 +1,5 @@
 """
-MigrationHouse — TPC-H workload loader for PostgreSQL.
+MigrationRoom — TPC-H workload loader for PostgreSQL.
 
 Loads the TPC-H SF1 .tbl files produced by `make tpch-data` into a
 dedicated `tpch` database on the target Postgres instance and applies

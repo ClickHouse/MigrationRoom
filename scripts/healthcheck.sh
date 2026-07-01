@@ -17,7 +17,7 @@ check() {
 }
 
 echo ""
-echo "── MigrationHouse — Health Check ────────────────"
+echo "── MigrationRoom — Health Check ────────────────"
 check "Postgres (5432)"           "docker compose exec -T postgres pg_isready -U playground -d ecommerce"
 # SSE endpoints: check HTTP 200 response code (stream body ignored)
 check "Postgres MCP (8001/sse)"   "test \$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:8001/sse) = 200"

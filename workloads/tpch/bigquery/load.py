@@ -1,5 +1,5 @@
 """
-MigrationHouse — TPC-H workload loader for BigQuery.
+MigrationRoom — TPC-H workload loader for BigQuery.
 
 Loads the TPC-H SF1 .tbl files produced by `make tpch-data` into
 ${BIGQUERY_PROJECT}.${BIGQUERY_DATASET} and applies the cross-source

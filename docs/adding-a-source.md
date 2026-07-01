@@ -1,6 +1,6 @@
 # Adding a Migration Source
 
-This guide explains how to add a new source database to the MigrationHouse. The source can be a **local container** (PostgreSQL, ClickHouse OSS, MySQL) or a **cloud service** (Snowflake, BigQuery, Redshift, AlloyDB) — the playground supports both. After following this guide you will have a fully working migration scenario: an accessible source database, an MCP server the agent can talk to, a source-specific system prompt, and a step-by-step migration guide.
+This guide explains how to add a new source database to the MigrationRoom. The source can be a **local container** (PostgreSQL, ClickHouse OSS, MySQL) or a **cloud service** (Snowflake, BigQuery, Redshift, AlloyDB) — the playground supports both. After following this guide you will have a fully working migration scenario: an accessible source database, an MCP server the agent can talk to, a source-specific system prompt, and a step-by-step migration guide.
 
 ---
 
@@ -39,7 +39,7 @@ The agent's behaviour is controlled by a layered system prompt that is **assembl
 
 The playground is a Docker Compose stack of ~13 services plus a few external dependencies. The diagram below is the single source of truth for how the pieces fit together.
 
-![MigrationHouse architecture](architecture.png)
+![MigrationRoom architecture](architecture.png)
 
 > Regenerate after editing `docs/architecture.mmd`: `make diagram` (uses `mermaid-cli` via `npx`).
 

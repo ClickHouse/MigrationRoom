@@ -1,5 +1,5 @@
 -- ──────────────────────────────────────────────────────────────────────
--- MigrationHouse — Snowflake demo workload
+-- MigrationRoom — Snowflake demo workload
 -- ──────────────────────────────────────────────────────────────────────
 -- Copies the TPC-H sample tables from SNOWFLAKE_SAMPLE_DATA into a fresh
 -- MIGRATION_DEMO.RETAIL schema and adds Snowflake-specific decorations

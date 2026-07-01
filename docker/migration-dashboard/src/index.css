@@ -1,5 +1,5 @@
 /* Design system tokens (ClickHouse brand) and component styles.
- * Verbatim from docs/design_handoff_migrationhouse/source — treat as
+ * Verbatim from docs/design_handoff_MigrationRoom/source — treat as
  * upstream; don't fork. We dropped Tailwind because its `.table-row`,
  * `.block`, `.hidden`, `.flex` etc. utility classes collided with the
  * design's named component classes of the same name. The single

@@ -21,7 +21,7 @@ export function Chrome({ status }: Props) {
         <div className="brand">
           <img
             src={logomark}
-            alt="MigrationHouse"
+            alt="MigrationRoom"
             className="brand-logomark"
             width={28}
             height={28}

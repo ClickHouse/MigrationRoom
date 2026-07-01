@@ -1,7 +1,7 @@
 .PHONY: setup up up-snowflake up-bigquery down reset reset-agent health logs pull diagram snowflake-setup snowflake-provision bigquery-provision tpch-data tpch-load-bigquery tpch-load-postgres tpch-load-clickhouse-oss migration-status
 
 setup:
-	@echo "Setting up MigrationHouse..."
+	@echo "Setting up MigrationRoom..."
 	@if [ ! -f "agent-skills/skills/clickhouse-best-practices/AGENTS.md" ]; then \
 		echo "Cloning agent-skills from GitHub..."; \
 		rm -rf agent-skills && git clone https://github.com/ClickHouse/agent-skills.git agent-skills; \

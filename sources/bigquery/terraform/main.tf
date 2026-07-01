@@ -72,7 +72,7 @@ resource "google_bigquery_dataset" "demo" {
   project                    = local.project_id
   dataset_id                 = var.dataset_name
   location                   = var.location
-  description                = "MigrationHouse demo: TPC-H + BigQuery-specific augmentations."
+  description                = "MigrationRoom demo: TPC-H + BigQuery-specific augmentations."
   delete_contents_on_destroy = true
 
   depends_on = [google_project_service.bigquery]
@@ -82,7 +82,7 @@ resource "google_bigquery_dataset" "demo" {
 resource "google_service_account" "demo" {
   project      = local.project_id
   account_id   = "migration-demo-sa"
-  display_name = "MigrationHouse demo SA"
+  display_name = "MigrationRoom demo SA"
   description  = "Read access to ${var.dataset_name} for the BigQuery migration demo."
 }
 

@@ -1,11 +1,11 @@
-# MigrationHouse
+# MigrationRoom
 
 **AI-assisted database migration to ClickHouse Cloud — run a real
 migration end-to-end in under an hour.**
 
-![MigrationHouse](docs/migrationhouse.png)
+![MigrationRoom](docs/MigrationRoom.png)
 
-MigrationHouse is a self-contained Docker Compose playground that
+MigrationRoom is a self-contained Docker Compose playground that
 turns the messy reality of database migration into a six-click
 workflow. Pick a source (PostgreSQL, Snowflake, BigQuery, or
 ClickHouse OSS), click each step on the dashboard, and watch an LLM
@@ -14,7 +14,7 @@ design a ClickHouse target schema, move the data, validate row
 counts, rewrite analytical queries, and benchmark source vs target —
 all on a real ClickHouse Cloud service you control.
 
-## Why MigrationHouse
+## Why MigrationRoom
 
 - **End-to-end, not a toy.** The agent reads your actual source
   schema, makes type-by-type decisions you can push back on
@@ -23,7 +23,7 @@ all on a real ClickHouse Cloud service you control.
   object-storage staging, and benchmarks the result. By the end you
   have a working ClickHouse Cloud database, not a slide deck.
 - **Grounded in ClickHouse best practices.** Every agent in
-  MigrationHouse loads the official
+  MigrationRoom loads the official
   [**ClickHouse/agent-skills**](https://github.com/ClickHouse/agent-skills)
   knowledge pack as part of its system prompt — the same rules the
   ClickHouse team curates for LLM-driven schema design and query
@@ -73,8 +73,8 @@ all on a real ClickHouse Cloud service you control.
 ## Quick Start
 
 ```bash
-git clone https://github.com/sishuoyang/MigrationHouse
-cd MigrationHouse
+git clone https://github.com/sishuoyang/MigrationRoom
+cd MigrationRoom
 make setup            # initialises submodules, injects agent skills, creates .env
 ```
 
@@ -104,12 +104,12 @@ up-bigquery` instead — both source MCPs are profile-gated because
 they need account credentials in `.env` (see the per-source GUIDE for
 the setup walkthrough).
 
-## Using the MigrationHouse dashboard
+## Using the MigrationRoom dashboard
 
-You'll land on the **MigrationHouse** dashboard with the LibreChat
+You'll land on the **MigrationRoom** dashboard with the LibreChat
 agent in the right pane.
 
-![MigrationHouse dashboard](docs/dashboard-overview.png)
+![MigrationRoom dashboard](docs/dashboard-overview.png)
 
 The dashboard is laid out top-to-bottom as five regions. Each control
 is described below.

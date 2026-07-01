@@ -1,5 +1,5 @@
 """
-MigrationHouse — Snowflake workload setup.
+MigrationRoom — Snowflake workload setup.
 
 Reads SNOWFLAKE_* credentials from the environment and executes
 setup_workload.sql against the partner's Snowflake account. Copies the

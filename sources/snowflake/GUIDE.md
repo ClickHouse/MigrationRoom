@@ -1,7 +1,7 @@
 # Migration Guide — Snowflake → ClickHouse Cloud
 
 This guide walks you through a complete Snowflake → ClickHouse Cloud
-migration using the **MigrationHouse** dashboard. The dashboard
+migration using the **MigrationRoom** dashboard. The dashboard
 orchestrates the work: you pick a source, click six step buttons in
 order, and watch the AI agent do each step live. The agent has MCP
 connections to your Snowflake source, your ClickHouse Cloud target, an
@@ -79,7 +79,7 @@ because the upstream MCP crashes without valid credentials.
 
 Open **<https://localhost/dashboard/>** (accept the self-signed cert)
 and sign in (`admin@playground.local` / `playground`). You'll land on
-the **MigrationHouse** dashboard with the chat panel on the right.
+the **MigrationRoom** dashboard with the chat panel on the right.
 
 In the **SETUP** card at the top:
 

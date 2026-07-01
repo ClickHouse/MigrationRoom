@@ -1,5 +1,5 @@
 """
-MigrationHouse — TPC-H workload loader for ClickHouse OSS.
+MigrationRoom — TPC-H workload loader for ClickHouse OSS.
 
 Loads the TPC-H SF1 .tbl files produced by `make tpch-data` into a
 dedicated `tpch` database on the target ClickHouse OSS instance and
