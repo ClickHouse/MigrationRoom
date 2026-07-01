@@ -3,7 +3,7 @@
 **AI-assisted database migration to ClickHouse Cloud — run a real
 migration end-to-end in under an hour.**
 
-![MigrationRoom](docs/MigrationRoom.png)
+![MigrationRoom](docs/MigrationRoom1.png)
 
 MigrationRoom is a self-contained Docker Compose playground that
 turns the messy reality of database migration into a six-click
