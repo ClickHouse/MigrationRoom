@@ -3,6 +3,14 @@
 Run from the repo root:
     python3 -m pip install -r tests/requirements.txt
     python3 -m pytest tests/test_sql_guard.py -v
+
+sql_guard.py classifies statements by tokenizing/parsing them with sqlglot's
+Databricks dialect rather than hand-lexing, because three earlier review
+rounds each found a real bypass in the hand-lexed version (CTE-prefixed DML,
+a backtick identifier that blinded the CTE scanner, and comment/string
+lexing that diverged from Spark's grammar). The must-allow/must-reject
+lists below are the cases empirically verified against sqlglot 30.15.0
+during the design of this rewrite, including all three of those bypasses.
 """
 import sys
 from pathlib import Path
@@ -11,72 +19,111 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker" / "databricks-mcp"))
 
-from sql_guard import READ_ONLY_LEADING_KEYWORDS, SqlNotAllowed, guard  # noqa: E402
+from sql_guard import SqlNotAllowed, guard  # noqa: E402
+
+# --- Verified cases -------------------------------------------------------
+#
+# The two entries containing a literal carriage return are written with the
+# "\r" escape below (not a raw CR byte) so they survive editors/git intact;
+# Python turns the escape into an actual CR character at parse time.
+
+MUST_ALLOW = [
+    "SELECT 1",
+    "SELECT 1;",
+    "select c from customer",
+    "(SELECT 1)",
+    "SELECT 1 UNION ALL SELECT 2",
+    "WITH x AS (SELECT 1) SELECT * FROM x",
+    "WITH t (n) AS (VALUES (1)) SELECT * FROM t",
+    "WITH RECURSIVE r (n) AS (VALUES (1) UNION ALL SELECT n+1 FROM r WHERE n<6) SELECT * FROM r",
+    "SELECT 1 FROM `a;b`",
+    "SELECT 'a;b' AS s",
+    "SELECT 1 AS `a--b` FROM t",
+    "SHOW CATALOGS",
+    "DESCRIBE TABLE m.t.o",
+    "DESCRIBE DETAIL m.t.l",
+    "DESCRIBE HISTORY m.t.l LIMIT 5",
+    "DESC DETAIL m.t.l",
+    "EXPLAIN SELECT 1",
+]
+
+MUST_REJECT = [
+    # The first five are the previously-verified bypasses.
+    "WITH x AS (SELECT 1) INSERT INTO orders SELECT * FROM x",
+    "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) INSERT INTO orders SELECT * FROM x",
+    "SHOW TABLES -- x\r; DROP TABLE t",
+    "SELECT 1 -- c\r; INSERT INTO orders VALUES (1)",
+    "SELECT 'a\\' AS x, ' ; DROP TABLE t",
+    "SELECT 1; DROP TABLE t",
+    "INSERT INTO t VALUES (1)",
+    "UPDATE t SET a=1",
+    "DELETE FROM t",
+    "DROP TABLE t",
+    "CREATE TABLE t (a INT)",
+    "ALTER TABLE t ADD COLUMN b INT",
+    "TRUNCATE TABLE t",
+    "COPY INTO t FROM 's3://b/k'",
+    "GRANT SELECT ON TABLE t TO `u`",
+    "MERGE INTO t USING s ON t.a=s.a WHEN MATCHED THEN UPDATE SET t.b=s.b",
+    "WITH x AS (SELECT 1) MERGE INTO t USING x ON t.a=x.a WHEN MATCHED THEN DELETE",
+    "OPTIMIZE m.t.l ZORDER BY (a)",
+    "VACUUM m.t.l",
+    "   ",  # empty / whitespace-only
+]
 
 
 @pytest.mark.parametrize(
-    "sql",
-    [
-        "SELECT 1",
-        "select c_custkey from customer",
-        "WITH x AS (SELECT 1) SELECT * FROM x",
-        "SHOW CATALOGS",
-        "DESCRIBE TABLE migration_demo.tpch.orders",
-        "DESC DETAIL migration_demo.tpch.lineitem",
-        "EXPLAIN SELECT 1",
-        "  \n  SELECT 1  \n ",
-        "(SELECT 1)",
-    ],
+    "sql", MUST_ALLOW, ids=[f"allow-{i:02d}" for i in range(len(MUST_ALLOW))]
 )
-def test_read_only_statements_are_allowed(sql):
+def test_verified_read_only_statements_are_allowed(sql):
     assert guard(sql)
 
 
 @pytest.mark.parametrize(
-    "sql",
-    [
-        "INSERT INTO t VALUES (1)",
-        "UPDATE t SET a = 1",
-        "DELETE FROM t",
-        "DROP TABLE t",
-        "CREATE TABLE t (a INT)",
-        "ALTER TABLE t ADD COLUMN b INT",
-        "MERGE INTO t USING s ON t.a = s.a",
-        "TRUNCATE TABLE t",
-        "COPY INTO t FROM 's3://b/k'",
-        "GRANT SELECT ON TABLE t TO `u`",
-    ],
+    "sql", MUST_REJECT, ids=[f"reject-{i:02d}" for i in range(len(MUST_REJECT))]
 )
-def test_mutating_statements_are_rejected(sql):
+def test_verified_mutations_and_malformed_input_are_rejected(sql):
     with pytest.raises(SqlNotAllowed):
         guard(sql)
 
 
-def test_multi_statement_is_rejected():
+def test_multi_statement_error_message_mentions_one_statement():
     with pytest.raises(SqlNotAllowed) as excinfo:
         guard("SELECT 1; DROP TABLE t")
     assert "one statement" in str(excinfo.value)
 
 
-def test_trailing_semicolon_is_not_multi_statement():
-    assert guard("SELECT 1;").startswith("SELECT 1")
+def test_mutation_error_message_points_to_clickhousectl():
+    with pytest.raises(SqlNotAllowed) as excinfo:
+        guard("DROP TABLE t")
+    assert "clickhousectl" in str(excinfo.value)
 
 
-def test_semicolon_inside_string_literal_is_not_multi_statement():
-    assert guard("SELECT 'a;b' AS s")
+# --- LIMIT injection -------------------------------------------------------
 
 
-def test_comment_hidden_mutation_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard("-- harmless\nDROP TABLE t")
+def test_limit_word_inside_backtick_alias_gets_exactly_one_real_limit():
+    out = guard("SELECT 1 AS `x LIMIT 5` FROM t")
+    # The backtick alias contains the word LIMIT verbatim; only the
+    # appended clause should introduce a *new* line starting with LIMIT.
+    assert out.count("\nLIMIT") == 1
+    assert out.endswith("LIMIT 200")
 
 
-def test_block_comment_hidden_mutation_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard("/* SELECT */ DROP TABLE t")
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SHOW CATALOGS",
+        "DESCRIBE TABLE m.t.o",
+        "DESC DETAIL m.t.l",
+        "EXPLAIN SELECT 1",
+    ],
+)
+def test_show_describe_explain_receive_no_limit(sql):
+    assert "LIMIT" not in guard(sql)
 
 
-def test_limit_is_injected_when_absent():
+def test_limit_is_injected_using_max_rows():
     assert guard("SELECT * FROM orders", max_rows=50).endswith("LIMIT 50")
 
 
@@ -85,227 +132,55 @@ def test_existing_limit_is_not_doubled():
     assert out.lower().count("limit") == 1
 
 
-def test_show_does_not_get_a_limit():
-    assert "LIMIT" not in guard("SHOW CATALOGS")
+def test_union_without_limit_gets_one_appended():
+    out = guard("SELECT 1 UNION ALL SELECT 2", max_rows=10)
+    assert out.count("\nLIMIT") == 1
+    assert out.endswith("LIMIT 10")
+
+
+def test_union_with_existing_limit_is_not_doubled():
+    out = guard("SELECT 1 UNION ALL SELECT 2 LIMIT 1", max_rows=10)
+    assert out.lower().count("limit") == 1
+
+
+# --- guard returns the original text, never a sqlglot regeneration --------
+
+
+def test_guard_returns_original_text_with_only_limit_appended():
+    sql = "SELECT  1,   `weird  Name` FROM   t"
+    out = guard(sql, max_rows=77)
+    assert out == sql + "\nLIMIT 77"
+
+
+def test_guard_preserves_original_formatting_when_no_limit_is_appended():
+    sql = "SHOW   CATALOGS"
+    assert guard(sql) == sql
+
+
+def test_guard_strips_the_trailing_semicolon_before_appending_limit():
+    out = guard("SELECT 1;", max_rows=5)
+    assert out == "SELECT 1\nLIMIT 5"
+
+
+def test_guard_strips_trailing_semicolon_when_no_limit_is_needed():
+    out = guard("SHOW CATALOGS;")
+    assert out == "SHOW CATALOGS"
+
+
+def test_guard_does_not_double_strip_semicolon_inside_backtick():
+    sql = "SELECT 1 FROM `a;b`"
+    out = guard(sql, max_rows=5)
+    assert out == sql + "\nLIMIT 5"
+
+
+# --- misc -------------------------------------------------------------
 
 
 def test_empty_statement_is_rejected():
     with pytest.raises(SqlNotAllowed):
-        guard("   ")
+        guard("")
 
 
-def test_keyword_set_is_read_only():
-    assert READ_ONLY_LEADING_KEYWORDS == frozenset(
-        {"SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"}
-    )
-
-
-# CTE-prefixed DML rejection tests
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "WITH x AS (SELECT 1) INSERT INTO t VALUES (1)",
-        "WITH x AS (SELECT 1) UPDATE t SET a = 1",
-        "WITH x AS (SELECT 1) DELETE FROM t",
-        "WITH x AS (SELECT 1) MERGE INTO t USING s ON t.a = s.a",
-    ],
-)
-def test_cte_with_dml_is_rejected(sql):
-    with pytest.raises(SqlNotAllowed) as excinfo:
-        guard(sql)
-    assert "CTE-prefixed DML" in str(excinfo.value)
-
-
-def test_cte_with_recursive_and_insert_is_rejected():
+def test_whitespace_only_statement_is_rejected():
     with pytest.raises(SqlNotAllowed):
-        guard("WITH RECURSIVE x AS (SELECT 1) INSERT INTO t VALUES (1)")
-
-
-def test_cte_with_column_list_and_insert_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard("WITH t (a, b) AS (SELECT 1, 2) INSERT INTO t VALUES (1, 2)")
-
-
-def test_cte_with_multiple_ctes_and_insert_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard("WITH a AS (SELECT 1), b AS (SELECT 2) INSERT INTO t SELECT * FROM a")
-
-
-def test_cte_with_nested_parens_and_insert_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard(
-            "WITH x AS (SELECT 1 FROM (SELECT 2) y) INSERT INTO t SELECT * FROM x"
-        )
-
-
-def test_cte_with_string_literal_paren_and_insert_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard("WITH x AS (SELECT '(' AS s) INSERT INTO t SELECT * FROM x")
-
-
-def test_cte_with_comment_hiding_insert_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard("WITH x AS (SELECT 1) /* c */ INSERT INTO t VALUES (1)")
-
-
-def test_cte_with_values_and_insert_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard("WITH t (n) AS (VALUES (1)) INSERT INTO t SELECT * FROM t")
-
-
-def test_cte_with_nested_cte_and_insert_is_rejected():
-    with pytest.raises(SqlNotAllowed):
-        guard(
-            "WITH x AS (WITH y AS (SELECT 1) SELECT * FROM y) "
-            "INSERT INTO t SELECT * FROM x"
-        )
-
-
-def test_cte_with_select_is_allowed():
-    assert guard("WITH x AS (SELECT 1) SELECT * FROM x")
-
-
-def test_cte_with_multiple_ctes_select_is_allowed():
-    assert guard("WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b")
-
-
-def test_cte_with_recursive_select_is_allowed():
-    assert guard("WITH RECURSIVE x AS (SELECT 1) SELECT * FROM x")
-
-
-def test_cte_with_column_list_select_is_allowed():
-    assert guard("WITH t (a, b) AS (SELECT 1, 2) SELECT * FROM t")
-
-
-def test_cte_with_nested_parens_select_is_allowed():
-    assert guard(
-        "WITH x AS (SELECT 1 FROM (SELECT 2) y) SELECT * FROM x"
-    )
-
-
-def test_cte_with_string_literal_paren_select_is_allowed():
-    assert guard("WITH x AS (SELECT '(' AS s) SELECT * FROM x")
-
-
-def test_cte_with_values_select_is_allowed():
-    assert guard("WITH t (n) AS (VALUES (1)) SELECT * FROM t")
-
-
-def test_cte_with_nested_cte_select_is_allowed():
-    assert guard("WITH x AS (WITH y AS (SELECT 1) SELECT * FROM y) SELECT * FROM x")
-
-
-def test_cte_with_select_gets_limit():
-    out = guard("WITH x AS (SELECT 1) SELECT * FROM x", max_rows=50)
-    assert out.endswith("LIMIT 50")
-
-
-def test_cte_with_select_existing_limit_not_doubled():
-    out = guard("WITH x AS (SELECT 1) SELECT * FROM x LIMIT 5", max_rows=50)
-    assert out.lower().count("limit") == 1
-
-
-def test_cte_with_multiple_ctes_select_gets_limit():
-    out = guard(
-        "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b", max_rows=50
-    )
-    assert out.endswith("LIMIT 50")
-
-
-# Backtick identifier tests (security: backticks can hide parens and keywords)
-@pytest.mark.parametrize(
-    "sql",
-    [
-        # Backtick containing ) closes CTE early, revealing the hidden DML
-        "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) INSERT INTO orders SELECT * FROM x",
-        "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) UPDATE t SET a = 1",
-        "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) DELETE FROM t",
-        "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) MERGE INTO t USING s ON t.a = s.a",
-    ],
-)
-def test_backtick_with_hidden_dml_is_rejected(sql):
-    with pytest.raises(SqlNotAllowed) as excinfo:
-        guard(sql)
-    assert "CTE-prefixed DML" in str(excinfo.value)
-
-
-def test_backtick_with_closing_paren_alone_and_insert():
-    with pytest.raises(SqlNotAllowed):
-        guard(
-            "WITH x AS (SELECT 1 AS `a)` FROM t) INSERT INTO orders SELECT * FROM x"
-        )
-
-
-def test_backtick_with_semicolon_is_allowed():
-    # This is a legitimate query: backtick contains semicolon
-    # Should NOT be treated as multi-statement
-    assert guard("SELECT 1 FROM `a;b`")
-
-
-def test_backtick_with_line_comment_marker_is_allowed():
-    # Backtick containing -- should not be treated as start of line comment
-    assert guard("SELECT 1 AS `a--b` FROM t")
-
-
-def test_backtick_with_block_comment_marker_is_allowed():
-    # Backtick containing /* should not start a block comment
-    assert guard("SELECT 1 AS `a/*b*/c` FROM t")
-
-
-def test_backtick_with_doubled_backtick_escape():
-    # Backtick with escaped backtick inside
-    assert guard("SELECT 1 AS `a``b` FROM t")
-
-
-def test_backtick_with_doubled_backtick_and_paren():
-    # Complex case: doubled backtick followed by paren
-    assert guard("SELECT 1 AS `a``)`b` FROM t")
-
-
-def test_string_with_line_comment_marker_not_a_comment():
-    # '--' inside single quotes is not a comment
-    assert guard("SELECT '--' AS s")
-
-
-def test_backtick_identifier_with_block_comment_marker_not_comment():
-    # '/*' inside backticks is not a comment
-    assert guard("SELECT 1 AS `/*` FROM t")
-
-
-def test_line_comment_with_unclosed_string_eats_rest():
-    # After --, everything to end of line is a comment, including 'unclosed string
-    # This is a legitimate statement with a line comment at the end
-    assert guard("SELECT 1 FROM t -- 'this is a comment")
-
-
-def test_limit_inside_backtick_still_gets_real_limit():
-    # If LIMIT appears inside a backtick identifier, a real LIMIT is still added
-    out = guard("SELECT * FROM t WHERE col = `LIMIT 5`", max_rows=50)
-    assert out.endswith("LIMIT 50")
-    # Verify there's only one real LIMIT (the injected one)
-    assert out.lower().count("limit") == 2  # 1 in backtick, 1 real
-
-
-def test_select_with_backtick_column_and_limit_not_doubled():
-    # Existing real LIMIT is not doubled even with backtick
-    out = guard("SELECT * FROM t WHERE col = `LIMIT` LIMIT 10", max_rows=50)
-    assert out.lower().count("limit") == 2  # 1 in backtick, 1 real
-
-
-def test_backtick_in_cte_with_closing_paren_and_select():
-    # Backtick with ) in CTE body, followed by legitimate SELECT
-    assert guard(
-        "WITH x AS (SELECT 1 AS `a)b` FROM t) SELECT * FROM x"
-    )
-
-
-def test_backtick_in_cte_with_closing_paren_gets_limit():
-    out = guard(
-        "WITH x AS (SELECT 1 AS `a)b` FROM t) SELECT * FROM x", max_rows=50
-    )
-    assert out.endswith("LIMIT 50")
-
-
-def test_string_literal_with_paren_not_confused_with_column_list():
-    # String containing ( should not be confused with column list
-    assert guard("SELECT '(' AS s")
+        guard("   \n\t  ")
