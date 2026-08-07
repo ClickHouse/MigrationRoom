@@ -81,11 +81,6 @@ def _ident(name: str) -> str:
     return f"`{cleaned}`"
 
 
-def _literal(value: str) -> str:
-    """Single-quote a string literal for interpolation into SQL."""
-    return "'" + str(value).replace("'", "''") + "'"
-
-
 @mcp.tool()
 def list_catalogs() -> list[dict[str, Any]]:
     """List Unity Catalog catalogs visible to this principal."""
@@ -105,8 +100,9 @@ def list_schemas(catalog: str) -> list[dict[str, Any]]:
         cur.execute(
             "SELECT schema_name, comment "
             "FROM system.information_schema.schemata "
-            f"WHERE catalog_name = {_literal(catalog)} "
-            "ORDER BY schema_name"
+            "WHERE catalog_name = ? "
+            "ORDER BY schema_name",
+            [catalog],
         )
         return _rows(cur)
 
@@ -123,9 +119,10 @@ def list_tables(catalog: str, schema: str) -> list[dict[str, Any]]:
         cur.execute(
             "SELECT table_name, table_type, comment "
             "FROM system.information_schema.tables "
-            f"WHERE table_catalog = {_literal(catalog)} "
-            f"  AND table_schema = {_literal(schema)} "
-            "ORDER BY table_name"
+            "WHERE table_catalog = ? "
+            "  AND table_schema = ? "
+            "ORDER BY table_name",
+            [catalog, schema],
         )
         tables = _rows(cur)
         for row in tables:
