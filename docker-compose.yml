@@ -229,6 +229,40 @@ services:
     networks:
       - playground-net
 
+  # ── Databricks Source MCP ───────────────────────────────────
+  # Purpose-built read-only MCP (docker/databricks-mcp) over a Databricks
+  # SQL warehouse. Databricks publishes no introspect-and-SELECT MCP for
+  # warehouses — their `databricks-mcp` package is an OAuth helper for the
+  # hosted UC-functions / vector-search / Genie servers — so this is ours,
+  # in the same spirit as clickhousectl-mcp. Because we author the tool
+  # schemas, no Gemini shim is needed (unlike snowflake-source).
+  #
+  # Profile-gated: partners using Databricks set DATABRICKS_* in .env then
+  # run `make up-databricks` (or `docker compose --profile databricks up -d`).
+  databricks-mcp:
+    profiles: ["databricks"]
+    build: ./docker/databricks-mcp
+    environment:
+      DATABRICKS_HOST: ${DATABRICKS_HOST:-}
+      DATABRICKS_HTTP_PATH: ${DATABRICKS_HTTP_PATH:-}
+      DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+      DATABRICKS_NAMESPACE: ${DATABRICKS_NAMESPACE:-}
+    ports:
+      - "8008:8000"
+    # Probe /sse with Python stdlib — the image is python:3.12-slim and has
+    # no curl/wget. The connection to Databricks is lazy (opened per tool
+    # call), so this passes even with invalid credentials; that's
+    # deliberate, so a credential typo surfaces as a clear tool error in
+    # chat rather than a container that won't start.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/sse', timeout=2).status == 200 else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - playground-net
+
   # ── Migration Runner ────────────────────────────────────────
   # Executes Python migration scripts in-chat (via run_python MCP tool)
   # so the agent can drive end-to-end migrations without asking the
@@ -353,6 +387,9 @@ services:
         # check we can express.
         condition: service_started
         required: false
+      databricks-mcp:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3080/health || exit 1"]
       interval: 10s
@@ -436,6 +473,7 @@ services:
           "postgres|Postgres → ClickHouse Cloud|POSTGRES"
           "snowflake|Snowflake → ClickHouse Cloud|SNOWFLAKE"
           "bigquery|BigQuery → ClickHouse Cloud|BIGQUERY"
+          "databricks|Databricks → ClickHouse Cloud|DATABRICKS"
           "clickhouse-oss|ClickHouse OSS → ClickHouse Cloud|CLICKHOUSE_OSS"
         )
         SHARED_MCPS=(clickhousectl clickhouse-docs migration-runner)
@@ -447,6 +485,7 @@ services:
         declare -A OPTIONAL_PROFILE=(
           [snowflake]=snowflake
           [bigquery]=bigquery
+          [databricks]=databricks
         )
         NORM_PROFILES=",$$(echo "$${ACTIVE_PROFILES:-}" | tr ' ' ',' | tr -s ','),"
 
