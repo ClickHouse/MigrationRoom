@@ -16,11 +16,13 @@ b = Benchmarker(
     target_database="<target-db-from-step-1>",
 )
 result = b.benchmark(queries=[
-    (
-        "<databricks query 1>",
-        "<clickhouse query 1>",
-    ),
-    # … one (source_sql, target_sql) pair per query from step 4
+    {
+        "name": "Q1: <short description>",
+        "source_sql": "<databricks query 1>",
+        "target_sql": "<clickhouse query 1>",
+    },
+    # … one dict per query from step 4. `name` is optional (defaults to Q1, Q2, …);
+    # either SQL may be omitted to time only one side.
 ])
 print(result)
 ```

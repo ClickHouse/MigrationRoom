@@ -36,7 +36,7 @@ the row count returned.
 | `date_trunc('month', d)` | `toStartOfMonth(d)` | ClickHouse also has `date_trunc` |
 | `datediff(a, b)` | `dateDiff('day', b, a)` | Argument order flips |
 | `catalog.schema.table` | `database.table` | Three levels collapse to two |
-| `SEMI JOIN` / `ANTI JOIN` | `SEMI LEFT JOIN` / `ANTI LEFT JOIN` | Keyword order differs |
+| `SEMI JOIN` / `ANTI JOIN` | `LEFT SEMI JOIN` / `LEFT ANTI JOIN` | Join kind precedes strictness in ClickHouse |
 | Implicit `NULL` ordering | `NULLS FIRST` / `NULLS LAST` explicit | Defaults differ — state it |
 
 ## Rules
