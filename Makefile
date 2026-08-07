@@ -118,6 +118,26 @@ databricks-provision:
 	@echo "Capture the .env block with:"
 	@echo "  cd sources/databricks/terraform/demo && terraform output -raw env_block"
 
+databricks-provision-workspace:
+	@echo "Phase 1/2 — creating a serverless Databricks workspace…"
+	cd sources/databricks/terraform/workspace && terraform init && terraform apply
+	@echo ""
+	@echo "Phase 2/2 — provisioning the demo objects into the new workspace…"
+	@# Hand the new workspace URL and the account SP's OAuth credentials to
+	@# the demo module. Terraform auto-loads *.auto.tfvars.json, so no
+	@# copy-paste step. The merge logic lives in a script, not an inline
+	@# heredoc: a heredoc spanning multiple Makefile recipe lines only
+	@# works under GNU Make's `.ONESHELL` (added in 3.82) — plain `make`
+	@# on macOS is still 3.81, which runs each recipe line in its own
+	@# shell and silently breaks a multi-line heredoc.
+	cd sources/databricks/terraform/workspace && terraform output -json > /tmp/mr-dbx-workspace-out.json
+	python3 sources/databricks/scripts/merge_workspace_tfvars.py /tmp/mr-dbx-workspace-out.json
+	cd sources/databricks/terraform/demo && terraform init && terraform apply
+	@rm -f /tmp/mr-dbx-workspace-out.json
+	@echo ""
+	@echo "Capture the .env block with:"
+	@echo "  cd sources/databricks/terraform/demo && terraform output -raw env_block"
+
 # Shared TPC-H workload. BigQuery is the first loader; future sources
 # get sibling targets (tpch-load-postgres, tpch-load-clickhouse-oss).
 # The Snowflake source keeps `snowflake-setup` — different mechanics

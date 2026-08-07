@@ -20,9 +20,14 @@ terraform {
   }
 }
 
+# Authenticates with either a PAT or OAuth M2M. Unset fields must be null,
+# not "" — the provider treats an empty string as an attempt to use that
+# auth method and then fails on ambiguity.
 provider "databricks" {
-  host  = var.workspace_url
-  token = var.databricks_token
+  host          = var.workspace_url
+  token         = var.databricks_token != "" ? var.databricks_token : null
+  client_id     = var.databricks_client_id != "" ? var.databricks_client_id : null
+  client_secret = var.databricks_client_secret != "" ? var.databricks_client_secret : null
 }
 
 # The AWS provider can't be lazy: it resolves credentials at configuration
@@ -260,6 +265,16 @@ resource "aws_iam_access_key" "staging_reader" {
 }
 
 # ── Workload ─────────────────────────────────────────────────────────
+# The workload script needs a PAT and needs write privileges (CREATE
+# CATALOG), so it runs as the provisioning identity, not as the demo
+# service principal. One hour is ample and limits the blast radius if the
+# state file leaks.
+resource "databricks_token" "provisioner" {
+  count            = var.run_workload_setup ? 1 : 0
+  comment          = "MigrationRoom workload setup (short-lived)"
+  lifetime_seconds = 3600
+}
+
 # Runs the same script as `make databricks-setup`, against the warehouse
 # just created. Triggers on the warehouse id so a recreated warehouse
 # re-seeds.
@@ -280,7 +295,7 @@ resource "null_resource" "setup_workload" {
     environment = {
       DATABRICKS_HOST      = var.workspace_url
       DATABRICKS_HTTP_PATH = databricks_sql_endpoint.demo.odbc_params[0].path
-      DATABRICKS_TOKEN     = var.databricks_token
+      DATABRICKS_TOKEN     = databricks_token.provisioner[0].token_value
     }
   }
 

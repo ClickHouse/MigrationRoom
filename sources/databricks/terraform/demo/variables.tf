@@ -4,9 +4,28 @@ variable "workspace_url" {
 }
 
 variable "databricks_token" {
-  description = "Personal access token for a workspace admin. Used only to provision; the demo principal gets its own token as an output."
+  description = "Personal access token for a workspace admin. Alternative to databricks_client_id/secret — supply exactly one of the two. Used only to provision; the demo principal gets its own token as an output."
   type        = string
   sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = var.databricks_token != "" || var.databricks_client_id != ""
+    error_message = "Set either databricks_token, or databricks_client_id and databricks_client_secret."
+  }
+}
+
+variable "databricks_client_id" {
+  description = "Application ID of a service principal with workspace-admin on workspace_url. Alternative to databricks_token — supply exactly one of the two."
+  type        = string
+  default     = ""
+}
+
+variable "databricks_client_secret" {
+  description = "OAuth secret matching databricks_client_id."
+  type        = string
+  sensitive   = true
+  default     = ""
 }
 
 variable "catalog_name" {

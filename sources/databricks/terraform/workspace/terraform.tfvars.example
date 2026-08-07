@@ -1,0 +1,14 @@
+# From the Databricks account console (accounts.cloud.databricks.com).
+# The service principal must have the account admin role. Creating it is
+# the one manual step in this path — it is the credential terraform uses,
+# so it cannot provision itself.
+databricks_account_id    = "00000000-0000-0000-0000-000000000000"
+databricks_client_id     = "00000000-0000-0000-0000-000000000000"
+databricks_client_secret = "dose................................"
+
+# Optional overrides.
+# workspace_name = "migrationroom-demo"
+# aws_region     = "us-east-1"
+
+# Only if your account has no Unity Catalog metastore in this region.
+# create_metastore = true
