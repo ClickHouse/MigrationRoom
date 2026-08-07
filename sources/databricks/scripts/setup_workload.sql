@@ -1,9 +1,14 @@
 -- MigrationRoom — Databricks demo workload.
 --
 -- Builds migration_demo.tpch from the read-only `samples.tpch` catalog that
--- ships with every Databricks workspace (~6M rows, no download), then adds
--- Databricks-specific decoration so the migration agent has to make real
--- decisions rather than a mechanical type-for-type copy.
+-- ships with every Databricks workspace, then adds Databricks-specific
+-- decoration so the migration agent has to make real decisions rather than
+-- a mechanical type-for-type copy. `samples.tpch` itself is scale factor
+-- 1000 (~1 TB, ~6 billion lineitem rows, ~1.5 billion orders rows); the
+-- table-population predicates below downsample it to SF1-equivalent
+-- cardinality (~6M lineitem rows, no download) so this script runs in
+-- minutes and the eventual ClickHouse Cloud migration moves megabytes, not
+-- terabytes.
 --
 -- Directives read by setup_workload.py:
 --   -- @requires: <hint>   abort with <hint> if the next statement fails
@@ -17,16 +22,69 @@ CREATE CATALOG IF NOT EXISTS migration_demo;
 
 CREATE SCHEMA IF NOT EXISTS migration_demo.tpch;
 
--- ── The 8 TPC-H tables, copied from the built-in samples catalog ──────
+-- ── The 8 TPC-H tables, downsampled from the built-in samples catalog ──
+--
+-- samples.tpch is scale factor 1000 (~1 TB total). The predicates below cut
+-- every table down to SF1-equivalent cardinality so this script runs in
+-- minutes and the demo migrates megabytes, not terabytes, into ClickHouse
+-- Cloud. Do NOT remove them:
+--   - orders and lineitem share the same key range (o_orderkey /
+--     l_orderkey <= 6000000) on purpose, so every kept line item's order
+--     still exists — a LIMIT or TABLESAMPLE on either would orphan rows.
+--   - customer is derived from the orders that were actually kept, so
+--     every kept order's customer still exists too.
+--   - region, nation are tiny at any scale factor and are copied whole.
+--   - part, partsupp, supplier are not joined by any demo query, so a
+--     cheap independent key-range slice is fine.
 
-CREATE OR REPLACE TABLE migration_demo.tpch.region   AS SELECT * FROM samples.tpch.region;
-CREATE OR REPLACE TABLE migration_demo.tpch.nation   AS SELECT * FROM samples.tpch.nation;
-CREATE OR REPLACE TABLE migration_demo.tpch.supplier AS SELECT * FROM samples.tpch.supplier;
-CREATE OR REPLACE TABLE migration_demo.tpch.customer AS SELECT * FROM samples.tpch.customer;
-CREATE OR REPLACE TABLE migration_demo.tpch.part     AS SELECT * FROM samples.tpch.part;
-CREATE OR REPLACE TABLE migration_demo.tpch.partsupp AS SELECT * FROM samples.tpch.partsupp;
-CREATE OR REPLACE TABLE migration_demo.tpch.orders   AS SELECT * FROM samples.tpch.orders;
-CREATE OR REPLACE TABLE migration_demo.tpch.lineitem AS SELECT * FROM samples.tpch.lineitem;
+CREATE OR REPLACE TABLE migration_demo.tpch.region AS SELECT * FROM samples.tpch.region;
+CREATE OR REPLACE TABLE migration_demo.tpch.nation AS SELECT * FROM samples.tpch.nation;
+
+CREATE OR REPLACE TABLE migration_demo.tpch.supplier AS
+SELECT * FROM samples.tpch.supplier WHERE s_suppkey <= 10000;
+
+CREATE OR REPLACE TABLE migration_demo.tpch.part AS
+SELECT * FROM samples.tpch.part WHERE p_partkey <= 200000;
+
+CREATE OR REPLACE TABLE migration_demo.tpch.partsupp AS
+SELECT * FROM samples.tpch.partsupp WHERE ps_partkey <= 200000;
+
+-- orders is declared explicitly (rather than `CREATE TABLE ... AS SELECT`)
+-- because o_orderyear is a generated column, and Databricks' ALTER TABLE
+-- ADD COLUMN grammar has no GENERATED clause — only CREATE TABLE's
+-- column_properties does. This is also augmentation "generated column on
+-- orders": it forces a decision between a MATERIALIZED column and an ALIAS
+-- column on ClickHouse.
+
+-- @requires: This hard-coded orders schema may not exactly match samples.tpch.orders's column types on this workspace (untested without a live workspace). If this fails, run DESCRIBE TABLE samples.tpch.orders and adjust the column list below to match, then rerun.
+CREATE OR REPLACE TABLE migration_demo.tpch.orders (
+    o_orderkey      BIGINT,
+    o_custkey       BIGINT,
+    o_orderstatus   STRING,
+    o_totalprice    DECIMAL(18,2),
+    o_orderdate     DATE,
+    o_orderpriority STRING,
+    o_clerk         STRING,
+    o_shippriority  INT,
+    o_comment       STRING,
+    o_orderyear     INT GENERATED ALWAYS AS (year(o_orderdate))
+);
+
+INSERT INTO migration_demo.tpch.orders (
+    o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate,
+    o_orderpriority, o_clerk, o_shippriority, o_comment
+)
+SELECT o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate,
+       o_orderpriority, o_clerk, o_shippriority, o_comment
+FROM samples.tpch.orders
+WHERE o_orderkey <= 6000000;
+
+CREATE OR REPLACE TABLE migration_demo.tpch.customer AS
+SELECT * FROM samples.tpch.customer
+WHERE c_custkey IN (SELECT o_custkey FROM migration_demo.tpch.orders);
+
+CREATE OR REPLACE TABLE migration_demo.tpch.lineitem AS
+SELECT * FROM samples.tpch.lineitem WHERE l_orderkey <= 6000000;
 
 -- ── Augmentation 1: VARIANT on orders ────────────────────────────────
 -- Forces a decision: map to ClickHouse JSON, or extract hot keys into
@@ -50,14 +108,7 @@ SET o_metadata = parse_json(
     )
 );
 
--- ── Augmentation 2: generated column on orders ────────────────────────
--- Forces a decision: MATERIALIZED column or ALIAS column on ClickHouse?
-
--- @requires: GENERATED ALWAYS AS requires Delta Lake with column generation support (DBR 8.3+).
-ALTER TABLE migration_demo.tpch.orders
-ADD COLUMN o_orderyear INT GENERATED ALWAYS AS (year(o_orderdate));
-
--- ── Augmentation 3: nested types on lineitem ──────────────────────────
+-- ── Augmentation 2: nested types on lineitem ──────────────────────────
 -- ARRAY<STRUCT> and MAP. Forces a decision between ClickHouse Nested,
 -- Array(Tuple(...)), and Map(String, String).
 
@@ -89,7 +140,7 @@ SET l_shipping_events = array(
         'fragile', CASE WHEN pmod(l_partkey, 11) = 0 THEN 'true' ELSE 'false' END
     );
 
--- ── Augmentation 4: TIMESTAMP vs TIMESTAMP_NTZ on lineitem ────────────
+-- ── Augmentation 3: TIMESTAMP vs TIMESTAMP_NTZ on lineitem ────────────
 -- Forces UTC normalisation and a DateTime64 precision choice.
 
 -- @requires: TIMESTAMP_NTZ requires DBSQL 2023.35+ or DBR 13.3+.
@@ -103,14 +154,14 @@ UPDATE migration_demo.tpch.lineitem
 SET l_committed_at     = cast(l_commitdate AS TIMESTAMP),
     l_committed_at_ntz = cast(cast(l_commitdate AS TIMESTAMP) AS TIMESTAMP_NTZ);
 
--- ── Augmentation 5: liquid clustering on lineitem ─────────────────────
+-- ── Augmentation 4: liquid clustering on lineitem ─────────────────────
 -- Forces a deliberate ClickHouse ORDER BY choice rather than copying a key.
 
 -- @requires: Liquid clustering (CLUSTER BY) requires DBR 13.3+ / DBSQL 2023.40+.
 ALTER TABLE migration_demo.tpch.lineitem
 CLUSTER BY (l_shipdate, l_suppkey);
 
--- ── Augmentation 6: deletion vectors + a real history to time-travel ──
+-- ── Augmentation 5: deletion vectors + a real history to time-travel ──
 -- No ClickHouse equivalent — the agent has to reason about
 -- ReplacingMergeTree, ClickPipes, or deferring CDC entirely.
 
@@ -123,7 +174,7 @@ WHERE l_orderkey IN (
     SELECT l_orderkey FROM migration_demo.tpch.lineitem LIMIT 500
 );
 
--- ── Augmentation 7: materialized view (serverless only) ───────────────
+-- ── Augmentation 6: materialized view (serverless only) ───────────────
 -- Recreated as a ClickHouse Materialized View on AggregatingMergeTree.
 -- Skipped rather than fatal: materialized views need serverless compute,
 -- and a classic warehouse is a perfectly reasonable demo environment.
