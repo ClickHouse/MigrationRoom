@@ -210,3 +210,102 @@ def test_cte_with_multiple_ctes_select_gets_limit():
         "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b", max_rows=50
     )
     assert out.endswith("LIMIT 50")
+
+
+# Backtick identifier tests (security: backticks can hide parens and keywords)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Backtick containing ) closes CTE early, revealing the hidden DML
+        "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) INSERT INTO orders SELECT * FROM x",
+        "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) UPDATE t SET a = 1",
+        "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) DELETE FROM t",
+        "WITH x AS (SELECT 1 AS `a) SELECT 2 AS b` FROM t) MERGE INTO t USING s ON t.a = s.a",
+    ],
+)
+def test_backtick_with_hidden_dml_is_rejected(sql):
+    with pytest.raises(SqlNotAllowed) as excinfo:
+        guard(sql)
+    assert "CTE-prefixed DML" in str(excinfo.value)
+
+
+def test_backtick_with_closing_paren_alone_and_insert():
+    with pytest.raises(SqlNotAllowed):
+        guard(
+            "WITH x AS (SELECT 1 AS `a)` FROM t) INSERT INTO orders SELECT * FROM x"
+        )
+
+
+def test_backtick_with_semicolon_is_allowed():
+    # This is a legitimate query: backtick contains semicolon
+    # Should NOT be treated as multi-statement
+    assert guard("SELECT 1 FROM `a;b`")
+
+
+def test_backtick_with_line_comment_marker_is_allowed():
+    # Backtick containing -- should not be treated as start of line comment
+    assert guard("SELECT 1 AS `a--b` FROM t")
+
+
+def test_backtick_with_block_comment_marker_is_allowed():
+    # Backtick containing /* should not start a block comment
+    assert guard("SELECT 1 AS `a/*b*/c` FROM t")
+
+
+def test_backtick_with_doubled_backtick_escape():
+    # Backtick with escaped backtick inside
+    assert guard("SELECT 1 AS `a``b` FROM t")
+
+
+def test_backtick_with_doubled_backtick_and_paren():
+    # Complex case: doubled backtick followed by paren
+    assert guard("SELECT 1 AS `a``)`b` FROM t")
+
+
+def test_string_with_line_comment_marker_not_a_comment():
+    # '--' inside single quotes is not a comment
+    assert guard("SELECT '--' AS s")
+
+
+def test_backtick_identifier_with_block_comment_marker_not_comment():
+    # '/*' inside backticks is not a comment
+    assert guard("SELECT 1 AS `/*` FROM t")
+
+
+def test_line_comment_with_unclosed_string_eats_rest():
+    # After --, everything to end of line is a comment, including 'unclosed string
+    # This is a legitimate statement with a line comment at the end
+    assert guard("SELECT 1 FROM t -- 'this is a comment")
+
+
+def test_limit_inside_backtick_still_gets_real_limit():
+    # If LIMIT appears inside a backtick identifier, a real LIMIT is still added
+    out = guard("SELECT * FROM t WHERE col = `LIMIT 5`", max_rows=50)
+    assert out.endswith("LIMIT 50")
+    # Verify there's only one real LIMIT (the injected one)
+    assert out.lower().count("limit") == 2  # 1 in backtick, 1 real
+
+
+def test_select_with_backtick_column_and_limit_not_doubled():
+    # Existing real LIMIT is not doubled even with backtick
+    out = guard("SELECT * FROM t WHERE col = `LIMIT` LIMIT 10", max_rows=50)
+    assert out.lower().count("limit") == 2  # 1 in backtick, 1 real
+
+
+def test_backtick_in_cte_with_closing_paren_and_select():
+    # Backtick with ) in CTE body, followed by legitimate SELECT
+    assert guard(
+        "WITH x AS (SELECT 1 AS `a)b` FROM t) SELECT * FROM x"
+    )
+
+
+def test_backtick_in_cte_with_closing_paren_gets_limit():
+    out = guard(
+        "WITH x AS (SELECT 1 AS `a)b` FROM t) SELECT * FROM x", max_rows=50
+    )
+    assert out.endswith("LIMIT 50")
+
+
+def test_string_literal_with_paren_not_confused_with_column_list():
+    # String containing ( should not be confused with column list
+    assert guard("SELECT '(' AS s")

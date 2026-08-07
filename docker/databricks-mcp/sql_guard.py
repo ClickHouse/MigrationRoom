@@ -15,10 +15,6 @@ READ_ONLY_LEADING_KEYWORDS = frozenset(
     {"SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"}
 )
 
-_LINE_COMMENT = re.compile(r"--[^\n]*")
-_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
-_SINGLE_QUOTED = re.compile(r"'(?:''|[^'])*'")
-_DOUBLE_QUOTED = re.compile(r'"(?:""|[^"])*"')
 _LEADING_WORD = re.compile(r"[(\s]*([A-Za-z_]+)")
 _TRAILING_LIMIT = re.compile(r"\blimit\b\s+\d+\s*$", re.I)
 
@@ -27,25 +23,149 @@ class SqlNotAllowed(ValueError):
     """Raised when a statement is not a single read-only statement."""
 
 
+def _neutralize(sql: str) -> str:
+    """Neutralize all quoted/commented regions in one pass, preserving length.
+
+    Returns a string of identical length where all characters inside any of
+    these five mutually-exclusive regions are replaced by spaces:
+    - line comments: -- to end of line (but not the newline itself)
+    - block comments: /* ... */
+    - single-quoted strings: '...' ('' escapes)
+    - double-quoted strings: "..." ("" escapes)
+    - backtick identifiers: `...` (`` escapes)
+
+    Whichever region opens first (in reading order) wins; once inside one,
+    the others cannot begin. This single-pass approach handles all interactions
+    correctly: '/*' is a string, not a comment; `--` is an identifier, not a
+    comment; -- 'unclosed remains a comment and eats the rest of the line.
+    """
+    result = []
+    i = 0
+
+    while i < len(sql):
+        # Line comment: -- to end of line
+        # Must come before backtick/quote checks
+        if i + 1 < len(sql) and sql[i : i + 2] == "--":
+            result.append(" ")
+            result.append(" ")
+            i += 2
+            # Consume until newline but preserve the newline
+            while i < len(sql) and sql[i] not in "\n":
+                result.append(" ")
+                i += 1
+            if i < len(sql) and sql[i] == "\n":
+                result.append("\n")
+                i += 1
+            continue
+
+        # Block comment: /* ... */
+        if i + 1 < len(sql) and sql[i : i + 2] == "/*":
+            result.append(" ")
+            result.append(" ")
+            i += 2
+            # Consume until */
+            while i + 1 < len(sql):
+                if sql[i : i + 2] == "*/":
+                    result.append(" ")
+                    result.append(" ")
+                    i += 2
+                    break
+                result.append(" ")
+                i += 1
+            continue
+
+        # Single-quoted string: '...' with '' as escape
+        if sql[i] == "'":
+            result.append(" ")
+            i += 1
+            while i < len(sql):
+                if sql[i] == "'":
+                    if i + 1 < len(sql) and sql[i + 1] == "'":
+                        # Escaped quote
+                        result.append(" ")
+                        result.append(" ")
+                        i += 2
+                    else:
+                        # End of string
+                        result.append(" ")
+                        i += 1
+                        break
+                else:
+                    result.append(" ")
+                    i += 1
+            continue
+
+        # Double-quoted string: "..." with "" as escape
+        if sql[i] == '"':
+            result.append(" ")
+            i += 1
+            while i < len(sql):
+                if sql[i] == '"':
+                    if i + 1 < len(sql) and sql[i + 1] == '"':
+                        # Escaped quote
+                        result.append(" ")
+                        result.append(" ")
+                        i += 2
+                    else:
+                        # End of string
+                        result.append(" ")
+                        i += 1
+                        break
+                else:
+                    result.append(" ")
+                    i += 1
+            continue
+
+        # Backtick-quoted identifier: `...` with `` as escape
+        if sql[i] == "`":
+            result.append(" ")
+            i += 1
+            while i < len(sql):
+                if sql[i] == "`":
+                    if i + 1 < len(sql) and sql[i + 1] == "`":
+                        # Escaped backtick
+                        result.append(" ")
+                        result.append(" ")
+                        i += 2
+                    else:
+                        # End of identifier
+                        result.append(" ")
+                        i += 1
+                        break
+                else:
+                    result.append(" ")
+                    i += 1
+            continue
+
+        # Regular character
+        result.append(sql[i])
+        i += 1
+
+    return "".join(result)
+
+
 def strip_comments(sql: str) -> str:
     """Remove block and line comments so they can't hide a leading keyword."""
-    return _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", sql))
+    neutralized = _neutralize(sql)
+    # Replace spaces that came from neutralization with empty space
+    # (but keep real spaces from the original)
+    return neutralized
 
 
 def leading_keyword(sql: str) -> str:
     """First bare word of the statement, upper-cased. Leading parens and
     comments are skipped so `(SELECT 1)` and `/* c */ SELECT 1` both read
     as SELECT."""
-    match = _LEADING_WORD.match(strip_comments(sql).strip())
+    neutralized = _neutralize(sql).strip()
+    match = _LEADING_WORD.match(neutralized)
     return match.group(1).upper() if match else ""
 
 
 def is_multi_statement(sql: str) -> bool:
     """True when a ';' separates statements. Semicolons inside string
     literals and comments don't count, and a single trailing ';' is fine."""
-    body = strip_comments(sql)
-    body = _DOUBLE_QUOTED.sub('""', _SINGLE_QUOTED.sub("''", body))
-    return ";" in body.strip().rstrip(";")
+    neutralized = _neutralize(sql)
+    return ";" in neutralized.strip().rstrip(";")
 
 
 def keyword_after_ctes(sql: str) -> str:
@@ -56,24 +176,12 @@ def keyword_after_ctes(sql: str) -> str:
     - "WITH x AS (SELECT 1) INSERT INTO ..." returns "INSERT"
     - "WITH x AS (SELECT 1) SELECT * FROM x" returns "SELECT"
 
-    Handles comments, string literals, RECURSIVE modifier, multiple CTEs,
-    and column lists. Uses a tokenizer to safely parse paren-balanced CTEs.
+    Handles comments, string literals (all types including backticks),
+    RECURSIVE modifier, multiple CTEs, and column lists. Uses a tokenizer
+    to safely parse paren-balanced CTEs against the neutralized version.
     """
-    # Strip comments
-    body = strip_comments(sql).strip()
-
-    # Replace string literals with placeholders to avoid parsing their contents
-    strings = {}
-    counter = [0]
-
-    def replace_string(match):
-        placeholder = f"__STR_{counter[0]}__"
-        strings[placeholder] = match.group(0)
-        counter[0] += 1
-        return placeholder
-
-    body = _SINGLE_QUOTED.sub(replace_string, body)
-    body = _DOUBLE_QUOTED.sub(replace_string, body)
+    # Neutralize quotes and comments so they can't affect paren counting
+    body = _neutralize(sql).strip()
 
     # Tokenize: extract words and structural tokens (parens, commas)
     tokens = []
