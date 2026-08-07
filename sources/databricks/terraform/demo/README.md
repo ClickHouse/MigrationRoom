@@ -30,7 +30,18 @@ that module creates a fresh serverless workspace and chains into this one.
 - An existing Databricks workspace with Unity Catalog enabled.
 - A personal access token (PAT) for a **workspace admin** — used only to
   provision; the demo principal gets its own token as an output. Set as
-  `databricks_token` in `terraform.tfvars`.
+  `databricks_token` in `terraform.tfvars`. Alternatively,
+  `databricks_client_id`/`databricks_client_secret` (OAuth) for a
+  service principal — this is how the chained call from `../workspace`
+  authenticates, since a freshly created workspace has no PAT yet. Supply
+  exactly one of the two.
+- **If chaining from `../workspace`:** this module creates
+  `databricks_catalog.demo`, and `CREATE CATALOG` is a metastore-level
+  privilege, not a workspace-level one. The OAuth identity therefore needs
+  to be the account admin service principal described in
+  `../workspace/README.md` (account admin implies metastore-admin
+  capability) — a principal scoped to only workspace-admin will
+  authenticate but fail at catalog creation.
 - `python3` and `pip` on the machine running `terraform` — the
   `null_resource.setup_workload` provisioner shells out to
   `setup_workload.py`.

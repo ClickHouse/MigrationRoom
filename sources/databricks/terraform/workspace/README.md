@@ -35,6 +35,20 @@ Once created, generate an OAuth secret for the service principal and note
 the application (client) ID and the account UUID (both visible in the
 console under your profile).
 
+**Why account admin specifically, not just workspace admin:** the chained
+`demo` apply creates a Unity Catalog catalog
+(`databricks_catalog.demo`), and `CREATE CATALOG` is a **metastore-level**
+privilege, not a workspace-level one — `provisioner_admin` below only
+grants workspace ADMIN. Nothing in this module grants a metastore
+privilege explicitly, because doing so would need the metastore ID and
+would be redundant if the assumption below already holds. The assumption
+is: an account admin has implicit metastore-admin capability, and
+metastore admins can create catalogs, so authenticating as an account
+admin — which you must do anyway for this module's own provider block —
+is what makes the later `CREATE CATALOG` succeed. A service principal
+scoped to something narrower than account admin will authenticate fine
+here and then fail, confusingly, when `demo` tries to create its catalog.
+
 ## Usage
 
 ```bash
@@ -102,3 +116,8 @@ configuration is syntactically and structurally valid: `terraform fmt
 pass against provider `databricks/databricks` v1.124.0. Provider-side
 behavior (serverless workspace creation, the permission assignment, the
 optional metastore path) has not been exercised end-to-end.
+
+The account-admin → implicit-metastore-admin → `CREATE CATALOG` chain
+described above under "The one manual prerequisite" is **documented, not
+verified against a live account** — the same lack-of-credentials caveat
+applies to it as to everything else in this list.
