@@ -111,6 +111,13 @@ databricks-setup:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	  python3 sources/databricks/scripts/setup_workload.py
 
+databricks-provision:
+	@echo "Provisioning the Databricks demo objects with Terraform…"
+	cd sources/databricks/terraform/demo && terraform init && terraform apply
+	@echo ""
+	@echo "Capture the .env block with:"
+	@echo "  cd sources/databricks/terraform/demo && terraform output -raw env_block"
+
 # Shared TPC-H workload. BigQuery is the first loader; future sources
 # get sibling targets (tpch-load-postgres, tpch-load-clickhouse-oss).
 # The Snowflake source keeps `snowflake-setup` — different mechanics

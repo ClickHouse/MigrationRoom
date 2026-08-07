@@ -1,0 +1,14 @@
+# Databricks workspace to provision the demo into.
+workspace_url    = "https://dbc-xxxxxxxx-xxxx.cloud.databricks.com"
+databricks_token = "dapi................................"
+
+# Optional overrides.
+# catalog_name   = "migration_demo"
+# schema_name    = "tpch"
+# warehouse_name = "migrationroom-demo"
+# warehouse_size = "2X-Small"
+
+# S3 staging for the bulk-unload path. Needs AWS credentials in the shell
+# (AWS_PROFILE, or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
+# enable_s3_staging = true
+# aws_region        = "us-east-1"
