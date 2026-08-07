@@ -98,3 +98,115 @@ def test_keyword_set_is_read_only():
     assert READ_ONLY_LEADING_KEYWORDS == frozenset(
         {"SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"}
     )
+
+
+# CTE-prefixed DML rejection tests
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH x AS (SELECT 1) INSERT INTO t VALUES (1)",
+        "WITH x AS (SELECT 1) UPDATE t SET a = 1",
+        "WITH x AS (SELECT 1) DELETE FROM t",
+        "WITH x AS (SELECT 1) MERGE INTO t USING s ON t.a = s.a",
+    ],
+)
+def test_cte_with_dml_is_rejected(sql):
+    with pytest.raises(SqlNotAllowed) as excinfo:
+        guard(sql)
+    assert "CTE-prefixed DML" in str(excinfo.value)
+
+
+def test_cte_with_recursive_and_insert_is_rejected():
+    with pytest.raises(SqlNotAllowed):
+        guard("WITH RECURSIVE x AS (SELECT 1) INSERT INTO t VALUES (1)")
+
+
+def test_cte_with_column_list_and_insert_is_rejected():
+    with pytest.raises(SqlNotAllowed):
+        guard("WITH t (a, b) AS (SELECT 1, 2) INSERT INTO t VALUES (1, 2)")
+
+
+def test_cte_with_multiple_ctes_and_insert_is_rejected():
+    with pytest.raises(SqlNotAllowed):
+        guard("WITH a AS (SELECT 1), b AS (SELECT 2) INSERT INTO t SELECT * FROM a")
+
+
+def test_cte_with_nested_parens_and_insert_is_rejected():
+    with pytest.raises(SqlNotAllowed):
+        guard(
+            "WITH x AS (SELECT 1 FROM (SELECT 2) y) INSERT INTO t SELECT * FROM x"
+        )
+
+
+def test_cte_with_string_literal_paren_and_insert_is_rejected():
+    with pytest.raises(SqlNotAllowed):
+        guard("WITH x AS (SELECT '(' AS s) INSERT INTO t SELECT * FROM x")
+
+
+def test_cte_with_comment_hiding_insert_is_rejected():
+    with pytest.raises(SqlNotAllowed):
+        guard("WITH x AS (SELECT 1) /* c */ INSERT INTO t VALUES (1)")
+
+
+def test_cte_with_values_and_insert_is_rejected():
+    with pytest.raises(SqlNotAllowed):
+        guard("WITH t (n) AS (VALUES (1)) INSERT INTO t SELECT * FROM t")
+
+
+def test_cte_with_nested_cte_and_insert_is_rejected():
+    with pytest.raises(SqlNotAllowed):
+        guard(
+            "WITH x AS (WITH y AS (SELECT 1) SELECT * FROM y) "
+            "INSERT INTO t SELECT * FROM x"
+        )
+
+
+def test_cte_with_select_is_allowed():
+    assert guard("WITH x AS (SELECT 1) SELECT * FROM x")
+
+
+def test_cte_with_multiple_ctes_select_is_allowed():
+    assert guard("WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b")
+
+
+def test_cte_with_recursive_select_is_allowed():
+    assert guard("WITH RECURSIVE x AS (SELECT 1) SELECT * FROM x")
+
+
+def test_cte_with_column_list_select_is_allowed():
+    assert guard("WITH t (a, b) AS (SELECT 1, 2) SELECT * FROM t")
+
+
+def test_cte_with_nested_parens_select_is_allowed():
+    assert guard(
+        "WITH x AS (SELECT 1 FROM (SELECT 2) y) SELECT * FROM x"
+    )
+
+
+def test_cte_with_string_literal_paren_select_is_allowed():
+    assert guard("WITH x AS (SELECT '(' AS s) SELECT * FROM x")
+
+
+def test_cte_with_values_select_is_allowed():
+    assert guard("WITH t (n) AS (VALUES (1)) SELECT * FROM t")
+
+
+def test_cte_with_nested_cte_select_is_allowed():
+    assert guard("WITH x AS (WITH y AS (SELECT 1) SELECT * FROM y) SELECT * FROM x")
+
+
+def test_cte_with_select_gets_limit():
+    out = guard("WITH x AS (SELECT 1) SELECT * FROM x", max_rows=50)
+    assert out.endswith("LIMIT 50")
+
+
+def test_cte_with_select_existing_limit_not_doubled():
+    out = guard("WITH x AS (SELECT 1) SELECT * FROM x LIMIT 5", max_rows=50)
+    assert out.lower().count("limit") == 1
+
+
+def test_cte_with_multiple_ctes_select_gets_limit():
+    out = guard(
+        "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b", max_rows=50
+    )
+    assert out.endswith("LIMIT 50")
