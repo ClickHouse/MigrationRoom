@@ -58,7 +58,7 @@ The components fall into five groups:
 - **`migration-runner`** — multi-purpose service. Hosts:
   - **MCP server** on SSE: exposes `run_python`, `run_python_background`, `tail_python_job`, `write_workspace_file`, `read_workspace_file`, `list_workspace_files`. This is the agent's Python sandbox.
   - **FastAPI** on `:8001`: REST + SSE for the dashboard. Endpoints under `/api/mk/runs/*` and `/api/mk/sources/*`. Source manifests and conversation pre-creation live here too.
-  - **`migrationkit` Python library** (importable inside `run_python`): `Migrator`, `Validator`, `Benchmarker`, the `Source` ABC (with concrete `PostgresSource`, `SnowflakeSource`, `BigQuerySource`, `ClickHouseOssSource`), `ClickHouseTarget`, and `S3Stage` / `GCSStage` for object-storage staging paths.
+  - **`migrationkit` Python library** (importable inside `run_python`): `Migrator`, `Validator`, `Benchmarker`, the `Source` ABC (with concrete `PostgresSource`, `SnowflakeSource`, `BigQuerySource`, `DatabricksSource`, `ClickHouseOssSource`), `ClickHouseTarget`, and `S3Stage` / `GCSStage` for object-storage staging paths.
   - **SQLite WAL state store** at `/workspace/state/migrationkit.db`. Authoritative state across the stack: `runs`, `run_tables`, `events`, `batches`, `controls`, `validations`, `benchmarks`. Concurrent writers in the same container; readers via FastAPI.
 
 **Source MCP layer** — one MCP server per supported source, all exposed to LibreChat over SSE:
@@ -67,6 +67,7 @@ The components fall into five groups:
 - **`clickhouse-oss-mcp`** (`mcp-clickhouse`) — `run_select_query`.
 - **`snowflake-source`** (`snowflake-labs/mcp`) + **`snowflake-source-shim`** — the shim is a Python proxy that strips JSON-Schema fields (`exclusiveMaximum`, `const`, `oneOf`, `allOf`, `$schema`) that Gemini's function-calling API rejects. LibreChat connects to the shim, not the upstream MCP.
 - **`bigquery-source`** (Google MCP toolbox) — `bigquery-list-dataset-ids`, `bigquery-list-table-ids`, `bigquery-get-table-info`, plus `INFORMATION_SCHEMA` access.
+- **`databricks-mcp`** (`docker/databricks-mcp`, purpose-built in-repo) — `list_catalogs`, `list_schemas`, `list_tables`, `describe_table`, `run_select_query`. Databricks publishes no introspect-and-SELECT MCP for SQL warehouses (their own `databricks-mcp` package is an OAuth helper for the hosted UC-functions / vector-search / Genie servers, not this), so this one is authored in-repo, in the same spirit as `clickhousectl-mcp`. Because we author its tool schemas directly, it needs no Gemini shim — unlike `snowflake-source`.
 
 **Target MCP — write-enabled:**
 
@@ -77,7 +78,7 @@ The components fall into five groups:
 - **`postgres`** — PostgreSQL 16 with `ecommerce` (~10M rows) and optional `tpch` (SF1) datasets.
 - **`clickhouse-oss`** — ClickHouse OSS with `analytics` (web events, ~12.2M rows) and optional `tpch` (SF1) datasets.
 
-Snowflake and BigQuery don't have bundled databases — the source MCPs connect to partner-provided cloud accounts.
+Snowflake, BigQuery, and Databricks don't have bundled databases — the source MCPs connect to partner-provided cloud accounts.
 
 ---
 
@@ -87,7 +88,7 @@ Snowflake and BigQuery don't have bundled databases — the source MCPs connect 
 
 ### MCP tools
 
-Exposed via SSE to LibreChat. All four agents attach this MCP.
+Exposed via SSE to LibreChat. All five agents attach this MCP.
 
 | Tool | Use for |
 |---|---|
@@ -135,7 +136,7 @@ The Python library inside the runner that handles data movement. Critical pieces
 ```python
 from migrationkit import (
     Migrator, Validator, Benchmarker,
-    PostgresSource, SnowflakeSource, BigQuerySource, ClickHouseOssSource,
+    PostgresSource, SnowflakeSource, BigQuerySource, DatabricksSource, ClickHouseOssSource,
     ClickHouseTarget,
     S3Stage, GCSStage,
 )
@@ -428,6 +429,7 @@ Do **not** add the cloud MCP to LibreChat's `depends_on` with `service_healthy` 
 | SQLite | `@modelcontextprotocol/server-sqlite` | Wraps with supergateway |
 | Snowflake | `@datawizardinc/mcp-snowflake-server` | Wraps with supergateway |
 | BigQuery | `@ergut/mcp-bigquery-server` | Wraps with supergateway |
+| Databricks | *(none suitable)* | Databricks publishes no introspect-and-SELECT MCP for SQL warehouses; see `docker/databricks-mcp` for a purpose-built one |
 | Redshift | use Postgres MCP with Redshift endpoint | Standard psycopg2 connection |
 
 > MCP package availability and names change frequently. Check [npmjs.com](https://www.npmjs.com) and [glama.ai/mcp/servers](https://glama.ai/mcp/servers) for the latest options before wiring up a new source.
@@ -623,11 +625,12 @@ The agent's behaviour is controlled by a set of modular instruction files. Edit 
 
 | File | Purpose |
 |---|---|
-| [librechat/clickhouse-cloud-instructions.md](../librechat/clickhouse-cloud-instructions.md) | Base ClickHouse Cloud rules — injected into `mcpServers.clickhousectl.serverInstructions` (shared by all four agents). |
+| [librechat/clickhouse-cloud-instructions.md](../librechat/clickhouse-cloud-instructions.md) | Base ClickHouse Cloud rules — injected into `mcpServers.clickhousectl.serverInstructions` (shared by all five agents). |
 | `agent-skills/.../AGENTS.md` | ClickHouse best-practices skill (cloned from [ClickHouse/agent-skills](https://github.com/ClickHouse/agent-skills) as a submodule). Appended to the same `clickhousectl` instructions. |
 | [librechat/sources/postgres-instructions.md](../librechat/sources/postgres-instructions.md) | Postgres-specific rules. |
 | [librechat/sources/snowflake-instructions.md](../librechat/sources/snowflake-instructions.md) | Snowflake-specific rules. |
 | [librechat/sources/bigquery-instructions.md](../librechat/sources/bigquery-instructions.md) | BigQuery-specific rules. |
+| [librechat/sources/databricks-instructions.md](../librechat/sources/databricks-instructions.md) | Databricks-specific rules. |
 | [librechat/sources/clickhouse-oss-instructions.md](../librechat/sources/clickhouse-oss-instructions.md) | ClickHouse OSS-specific rules. |
 
 Each pre-built agent attaches exactly the MCPs for its source, so it transparently receives only the relevant `serverInstructions` — no per-agent `instructions` field is set. `make setup` rebuilds the injected blocks idempotently. **Don't edit anything below the `--- Migration Rules (auto-injected …) ---` marker in `librechat.yaml`**; the MCP-purpose blurb above the marker IS hand-editable.
@@ -658,15 +661,19 @@ make setup                 # first-time setup (submodules + agent skills + .env 
 make up                    # start the playground (Postgres + ClickHouse OSS sources)
 make up-snowflake          # also start the Snowflake source MCP + Gemini shim
 make up-bigquery           # also start the BigQuery source MCP
+make up-databricks         # also start the Databricks source MCP (databricks-mcp)
 make snowflake-setup       # set up MIGRATION_DEMO.RETAIL workload in existing Snowflake (Path A)
 make snowflake-provision   # provision a fresh Snowflake demo env with Terraform (Path B)
+make databricks-setup      # seed migration_demo.tpch in an existing Databricks workspace (manual entry path)
+make databricks-provision  # provision the demo catalog/schema/warehouse into an existing workspace with Terraform
+make databricks-provision-workspace # provision a fresh serverless workspace, then chain into databricks-provision
 make tpch-data             # generate TPC-H SF1 .tbl files in workloads/tpch/data/sf1/
 make tpch-load-bigquery    # load TPC-H + augmentations into BigQuery
 make tpch-load-postgres    # load TPC-H into Postgres
 make tpch-load-clickhouse-oss # load TPC-H into the bundled ClickHouse OSS
 make down                  # stop without removing data
 make reset                 # destroy volumes and start fresh
-make reset-agent           # delete + recreate the four pre-built agents (after AGENT_PROVIDER/AGENT_MODEL changes in .env)
+make reset-agent           # delete + recreate the five pre-built agents (after AGENT_PROVIDER/AGENT_MODEL changes in .env)
 make health                # check all services are healthy
 make migration-status      # check progress of a running migration script (target row counts)
 make logs                  # tail all service logs

@@ -7,8 +7,8 @@ migration end-to-end in under an hour.**
 
 MigrationRoom is a self-contained Docker Compose playground that
 turns the messy reality of database migration into a six-click
-workflow. Pick a source (PostgreSQL, Snowflake, BigQuery, or
-ClickHouse OSS), click each step on the dashboard, and watch an LLM
+workflow. Pick a source (PostgreSQL, Snowflake, BigQuery, Databricks,
+or ClickHouse OSS), click each step on the dashboard, and watch an LLM
 agent with live MCP connections do the work: introspect the source,
 design a ClickHouse target schema, move the data, validate row
 counts, rewrite analytical queries, and benchmark source vs target —
@@ -35,7 +35,7 @@ all on a real ClickHouse Cloud service you control.
   not its training-data approximation of them. The skills are pulled
   in as a git submodule so updates ship with `git submodule update
   --remote`.
-- **Source-agnostic in the same shape.** Four sources, one dashboard,
+- **Source-agnostic in the same shape.** Five sources, one dashboard,
   one set of six step buttons. The agent and source MCP swap behind
   the scenes when you change the source dropdown — no setup juggling.
 - **MCP-native.** Every database connection is exposed through an MCP
@@ -58,6 +58,7 @@ all on a real ClickHouse Cloud service you control.
 | **ClickHouse OSS → ClickHouse Cloud** | Web analytics platform + TPC-H option | [sources/clickhouse-oss/GUIDE.md](sources/clickhouse-oss/GUIDE.md) |
 | **Snowflake → ClickHouse Cloud** | TPC-H + Snowflake-specific augmentations (VARIANT, TIMESTAMP_TZ, Stream, Dynamic Table, Clustering Key) | [sources/snowflake/GUIDE.md](sources/snowflake/GUIDE.md) |
 | **BigQuery → ClickHouse Cloud** | TPC-H + BigQuery-specific augmentations (STRUCT, ARRAY<STRUCT>, partitioned + clustered tables, materialized view) | [sources/bigquery/GUIDE.md](sources/bigquery/GUIDE.md) |
+| **Databricks → ClickHouse Cloud** | TPC-H + Databricks-specific augmentations (VARIANT, ARRAY&lt;STRUCT&gt;, MAP, generated column, liquid clustering, deletion vectors, materialized view) | [sources/databricks/GUIDE.md](sources/databricks/GUIDE.md) |
 
 ## Prerequisites
 
@@ -99,10 +100,10 @@ self-signed certificate warning). Sign in with
 > total. PostgreSQL: `docker compose logs postgres -f`. ClickHouse
 > OSS: `docker compose logs clickhouse-oss -f`.
 
-For Snowflake or BigQuery, run `make up-snowflake` or `make
-up-bigquery` instead — both source MCPs are profile-gated because
-they need account credentials in `.env` (see the per-source GUIDE for
-the setup walkthrough).
+For Snowflake, BigQuery, or Databricks, run `make up-snowflake`, `make
+up-bigquery`, or `make up-databricks` instead — all three source MCPs
+are profile-gated because they need account credentials in `.env` (see
+the per-source GUIDE for the setup walkthrough).
 
 ## Using the MigrationRoom dashboard
 
@@ -120,16 +121,17 @@ Three controls that determine which agent runs and what data it
 operates on. Change them before clicking any step button.
 
 - **Source dropdown** — `Postgres` / `Snowflake` / `BigQuery` /
-  `ClickHouse OSS`. Switching the source **auto-switches the
-  LibreChat agent** in the right pane to the matching pre-built agent
-  (e.g. picking BigQuery selects the `BigQuery → ClickHouse Cloud`
-  agent with its MCPs and system prompt). No agent toggling needed in
-  LibreChat.
+  `Databricks` / `ClickHouse OSS`. Switching the source
+  **auto-switches the LibreChat agent** in the right pane to the
+  matching pre-built agent (e.g. picking BigQuery selects the
+  `BigQuery → ClickHouse Cloud` agent with its MCPs and system
+  prompt). No agent toggling needed in LibreChat.
 - **Source database dropdown** — the actual database / dataset /
   schema name on the source. For bundled workloads: `ecommerce`
   (Postgres) or `analytics` (ClickHouse OSS) or `migration_demo`
-  (Snowflake / BigQuery). For TPC-H loaded via `make tpch-load-*`:
-  `tpch`.
+  (Snowflake / BigQuery / Databricks, e.g. `migration_demo.tpch` for
+  Databricks' `catalog.schema` pair). For TPC-H loaded via `make
+  tpch-load-*`: `tpch`.
 - **Edit · N OLAP button** — opens an editor for the analytical
   queries that drive step 1's `ORDER BY` design, step 4's query
   rewrite, and step 5's benchmark. `N` is how many queries are
@@ -209,6 +211,7 @@ reads `KPI DASHBOARD · LIVE · STEP N — <step name>`.
   [Postgres](sources/postgres/GUIDE.md) ·
   [Snowflake](sources/snowflake/GUIDE.md) ·
   [BigQuery](sources/bigquery/GUIDE.md) ·
+  [Databricks](sources/databricks/GUIDE.md) ·
   [ClickHouse OSS](sources/clickhouse-oss/GUIDE.md).
 - **Add your own source database** —
   [docs/adding-a-source.md](docs/adding-a-source.md) explains the
@@ -226,9 +229,10 @@ make setup               # first-time setup (submodules + agent skills + .env)
 make up                  # start the playground (Postgres + ClickHouse OSS sources)
 make up-snowflake        # also start the Snowflake source MCP (needs SNOWFLAKE_* in .env)
 make up-bigquery         # also start the BigQuery source MCP (needs BIGQUERY_* in .env)
+make up-databricks       # also start the Databricks source MCP (needs DATABRICKS_* in .env)
 make down                # stop without removing data
 make reset               # destroy volumes and start fresh
-make reset-agent         # delete + recreate the four pre-built agents (after model/provider changes)
+make reset-agent         # delete + recreate the five pre-built agents (after model/provider changes)
 ```
 
 The full command list lives in the [Makefile](Makefile); see the

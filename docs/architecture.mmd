@@ -42,6 +42,7 @@ flowchart TB
             sf_shim["snowflake-source-shim\n(Gemini schema-strip proxy)"]
             sf_mcp["snowflake-source\n(Snowflake-Labs MCP)"]
             bq_mcp["bigquery-source\n(Google MCP toolbox)"]
+            dbx_mcp["databricks-mcp\n(purpose-built, in-repo)"]
             chctl["clickhousectl-mcp\nrun_query · run_command\n(write-enabled CH Cloud MCP)"]
             sf_shim --> sf_mcp
         end
@@ -61,6 +62,7 @@ flowchart TB
             direction LR
             sf_acct[("Snowflake account")]
             bq_proj[("BigQuery project")]
+            dbx_ws[("Databricks workspace")]
         end
         subgraph staging["Optional object-storage staging"]
             direction LR
@@ -86,6 +88,7 @@ flowchart TB
     librechat <-->|"SSE"| ch_oss_mcp
     librechat <-->|"SSE"| sf_shim
     librechat <-->|"SSE"| bq_mcp
+    librechat <-->|"SSE"| dbx_mcp
     librechat <-->|"SSE"| chctl
 
     %% migrationkit data plane (read source, write target, write state)
@@ -95,6 +98,7 @@ flowchart TB
     migrationkit -->|"read"| ch_oss
     migrationkit -->|"read"| sf_acct
     migrationkit -->|"read"| bq_proj
+    migrationkit -->|"read"| dbx_ws
     migrationkit -->|"HTTPS INSERT"| ch_cloud
 
     %% Source-MCP backing-DB connections
@@ -102,6 +106,7 @@ flowchart TB
     ch_oss_mcp <--> ch_oss
     sf_mcp <-->|"snowflake-connector"| sf_acct
     bq_mcp <-->|"google-cloud-bigquery"| bq_proj
+    dbx_mcp <-->|"databricks-sql-connector"| dbx_ws
     chctl <-->|"HTTPS"| ch_cloud
 
     %% Optional staging paths (dashed)
@@ -119,10 +124,10 @@ flowchart TB
     classDef dbBox      fill:#f3e8ff,stroke:#9333ea,stroke-width:1.5px,color:#3b0764
     classDef stagingBox fill:#e0f2fe,stroke:#0284c7,stroke-width:1.5px,color:#0c4a6e
 
-    class llm,ch_cloud,sf_acct,bq_proj cloudBox
+    class llm,ch_cloud,sf_acct,bq_proj,dbx_ws cloudBox
     class s3,gcs stagingBox
     class partner hostNode
     class nginx,dashboard,librechat,mongo uiBox
     class runner_mcp,runner_api,runner_state,migrationkit runnerBox
-    class pg_mcp,ch_oss_mcp,sf_mcp,sf_shim,bq_mcp,chctl mcpBox
+    class pg_mcp,ch_oss_mcp,sf_mcp,sf_shim,bq_mcp,dbx_mcp,chctl mcpBox
     class pg,ch_oss dbBox
