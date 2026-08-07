@@ -29,15 +29,25 @@ variable "databricks_client_secret" {
 }
 
 variable "catalog_name" {
-  description = "Unity Catalog catalog to create for the demo workload."
+  description = "Unity Catalog catalog to create for the demo workload. Not currently customizable: sources/databricks/scripts/setup_workload.sql hard-codes migration_demo.tpch in all of its statements, so changing this value only creates a second, ungranted catalog and leaves the seeded data behind in migration_demo. Templating the SQL is a tracked follow-up, not something to do at this merge gate."
   type        = string
   default     = "migration_demo"
+
+  validation {
+    condition     = var.catalog_name == "migration_demo"
+    error_message = "catalog_name must stay \"migration_demo\": sources/databricks/scripts/setup_workload.sql hard-codes the migration_demo.tpch namespace in all 25 of its statements. Changing this variable does not retarget the seeding script — it creates and grants a second, empty catalog while the TPC-H data still lands in migration_demo.tpch, ungranted. Templating setup_workload.sql to honor this variable is a follow-up, not something to change here."
+  }
 }
 
 variable "schema_name" {
-  description = "Schema inside the catalog. Together with catalog_name this becomes DATABRICKS_NAMESPACE."
+  description = "Schema inside the catalog. Together with catalog_name this becomes DATABRICKS_NAMESPACE. Not currently customizable: sources/databricks/scripts/setup_workload.sql hard-codes migration_demo.tpch in all of its statements, so changing this value only creates a second, ungranted schema and leaves the seeded data behind in tpch. Templating the SQL is a tracked follow-up, not something to do at this merge gate."
   type        = string
   default     = "tpch"
+
+  validation {
+    condition     = var.schema_name == "tpch"
+    error_message = "schema_name must stay \"tpch\": sources/databricks/scripts/setup_workload.sql hard-codes the migration_demo.tpch namespace in all 25 of its statements. Changing this variable does not retarget the seeding script — it creates and grants a second, empty schema while the TPC-H data still lands in migration_demo.tpch, ungranted. Templating setup_workload.sql to honor this variable is a follow-up, not something to change here."
+  }
 }
 
 variable "warehouse_name" {

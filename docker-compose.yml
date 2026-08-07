@@ -363,8 +363,10 @@ services:
     # `docker compose ps` instead of a silent runtime bug.
     #
     # snowflake-source / snowflake-source-shim are profile-gated to
-    # `snowflake`; Compose silently skips depends_on entries for services
-    # excluded by the active profile set, so leaving them here is safe.
+    # `snowflake`, bigquery-source to `bigquery`, and databricks-mcp to
+    # `databricks`; Compose silently skips depends_on entries for
+    # services excluded by the active profile set, so leaving them
+    # here is safe.
     depends_on:
       mongodb:
         condition: service_healthy
@@ -414,9 +416,9 @@ services:
       MONGO_URI: "mongodb://mongodb:27017/LibreChat"
       LIBRECHAT_URL: "http://librechat:3080"
       # Forwarded from the host's $COMPOSE_PROFILES so the agent loop knows
-      # which optional sources (snowflake, bigquery) the partner actually
-      # turned on. Agents for inactive sources are skipped and any stale
-      # row from a previous profile is deleted.
+      # which optional sources (snowflake, bigquery, databricks) the partner
+      # actually turned on. Agents for inactive sources are skipped and any
+      # stale row from a previous profile is deleted.
       ACTIVE_PROFILES: ${COMPOSE_PROFILES:-}
     entrypoint: ["/bin/bash", "-c"]
     command:

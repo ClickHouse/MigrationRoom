@@ -15,7 +15,8 @@ setup:
 	@mkdir -p secrets && [ -f secrets/gcp-key.json ] || echo '{}' > secrets/gcp-key.json
 	@# Seed a runtime librechat.yaml so `docker compose up` works even
 	@# before the user has run one of the up* targets. Defaults to empty
-	@# profiles, which strips snowflake-source and bigquery-source.
+	@# profiles, which strips snowflake-source, bigquery-source, and
+	@# databricks-mcp.
 	@COMPOSE_PROFILES="" bash scripts/build-librechat-runtime.sh
 	@echo "✅ Setup complete. Run: make up"
 

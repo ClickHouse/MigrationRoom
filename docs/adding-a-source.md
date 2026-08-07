@@ -24,10 +24,23 @@ sources/
 │   ├── prompts/
 │   └── GUIDE.md
 │
-└── snowflake/                  ← Snowflake → ClickHouse Cloud  (cloud source — no docker/)
+├── snowflake/                   ← Snowflake → ClickHouse Cloud  (cloud source — no docker/)
+│   ├── queries/
+│   ├── scripts/
+│   ├── prompts/
+│   └── GUIDE.md
+│
+├── bigquery/                    ← BigQuery → ClickHouse Cloud  (cloud source — no docker/)
+│   ├── queries/
+│   ├── scripts/
+│   ├── prompts/
+│   └── GUIDE.md
+│
+└── databricks/                  ← Databricks → ClickHouse Cloud  (cloud source — no docker/)
     ├── queries/
     ├── scripts/
     ├── prompts/
+    ├── terraform/               ← optional demo/workspace provisioning
     └── GUIDE.md
 ```
 
@@ -98,7 +111,7 @@ Exposed via SSE to LibreChat. All five agents attach this MCP.
 | `write_workspace_file(path, content)` | Writes a file under `/workspace/`. The agent uses this to persist the migration script before dispatching it. |
 | `read_workspace_file(path)` / `list_workspace_files()` | Read-only file ops on `/workspace/`. |
 
-**Why dispatch + ONE tail instead of polling:** every `tail_python_job` call replays the full conversation context to the LLM — repeated polling burns tokens quadratically with no UX benefit. The dashboard's Migration tab already streams per-table progress via SSE; the agent's job is to dispatch + stop, and the partner watches the dashboard. This is enforced in every source's `sources/<id>/prompts/02-migrate-data.md` and in the system prompts at `librechat/sources/{snowflake,bigquery}-instructions.md`.
+**Why dispatch + ONE tail instead of polling:** every `tail_python_job` call replays the full conversation context to the LLM — repeated polling burns tokens quadratically with no UX benefit. The dashboard's Migration tab already streams per-table progress via SSE; the agent's job is to dispatch + stop, and the partner watches the dashboard. This is enforced in every source's `sources/<id>/prompts/02-migrate-data.md` and in the system prompts at `librechat/sources/{snowflake,bigquery,databricks}-instructions.md`.
 
 ### FastAPI HTTP surface
 
@@ -362,7 +375,12 @@ volumes:
   <source-name>-data:
 ```
 
-> **Port allocation:** Postgres MCP uses host port `8001`, ClickHouse OSS MCP uses `8002`. Use the next available port (e.g. `8003`) for a third source to avoid conflicts.
+> **Port allocation:** currently in use — `8001` Postgres MCP, `8002`
+> ClickHouse OSS MCP, `8003` clickhousectl MCP, `8004` Snowflake source,
+> `8005`/`8006` migration-runner (MCP / HTTP API), `8007` BigQuery
+> source, `8008` Databricks MCP, `8014` Snowflake's Gemini-compat shim.
+> Use the next available port (e.g. `8009`) for a new source to avoid
+> conflicts.
 
 Also add the new MCP service to LibreChat's `depends_on`:
 

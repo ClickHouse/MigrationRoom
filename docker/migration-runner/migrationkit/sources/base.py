@@ -48,6 +48,9 @@ class Source(ABC):
                         keyed on the session's `cursor.sfqid`
           - Postgres:   `EXPLAIN (ANALYZE, FORMAT JSON)` → `Execution Time`
           - BigQuery:   (planned) `jobs.get` totalSlotMs / endTime-startTime
+          - Databricks: SQL query-history REST API keyed on `cursor.query_id`,
+                        falling back to `system.query.history`; `None` if
+                        neither is available
 
         `server_ms` may be `None` only when the engine genuinely can't
         return a server-side timing for this query — callers fall back

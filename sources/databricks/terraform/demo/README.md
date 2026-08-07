@@ -45,6 +45,13 @@ that module creates a fresh serverless workspace and chains into this one.
 - `python3` and `pip` on the machine running `terraform` — the
   `null_resource.setup_workload` provisioner shells out to
   `setup_workload.py`.
+- **`databricks_grants.samples` can fail on the first `apply`:** the
+  built-in `samples` catalog is often owned by a different metastore
+  admin than the identity running Terraform, in which case granting on
+  it fails at apply time. If that happens, have the metastore admin
+  grant ownership (or `SELECT`/`USE CATALOG`/`USE SCHEMA` on
+  `samples.tpch` directly) to your provisioning principal and re-apply
+  — this is a per-account permission quirk, not a bug in the module.
 - **Only if `enable_s3_staging=true`:** AWS credentials in the shell
   (`AWS_PROFILE`, or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) with
   permission to create S3 buckets, an IAM role, an IAM user, and policies.

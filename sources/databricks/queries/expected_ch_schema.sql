@@ -11,17 +11,24 @@
 -- not by name. Reordering a column here — even one that still exists on
 -- both sides — silently scrambles data for any table migrated through
 -- that path. Column order below matches `samples.tpch.*` /
--- `sources/databricks/scripts/setup_workload.sql`, with augmented columns
--- appended at the end in the order they were added by `ALTER TABLE`.
+-- `sources/databricks/scripts/setup_workload.sql`: most augmented
+-- columns are appended at the end in the order they were added by
+-- `ALTER TABLE`, except `o_orderyear`, which `setup_workload.sql`
+-- declares at `CREATE TABLE` time and so sits at source position 10,
+-- immediately before `o_metadata` — not at the end.
 --
 -- `o_orderyear` is the one exception worth flagging: it is `MATERIALIZED`,
 -- so ClickHouse excludes it from `SELECT *` and from the implicit column
 -- list of a column-less `INSERT INTO ... SELECT * FROM s3(...)` — unlike
 -- Databricks' `GENERATED ALWAYS AS`, which is a normal stored column that
--- SELECT * does return. A source unload query that does `SELECT *` will
--- therefore carry one extra column that has no destination slot; the S3
--- unload for `orders` needs an explicit column list that omits
--- `o_orderyear`, not a bare `SELECT *`.
+-- SELECT * does return. This is not a problem in practice: `unload_to_s3`
+-- always does `SELECT * FROM {fq_table}` — it has no `source_query`
+-- parameter, and `Migrator` never forwards one to it — and ClickHouse's
+-- `s3()` / `file()` table functions push the target's structure into the
+-- read and match Parquet columns by name, not position. An 11-column
+-- source Parquet file (10 insertable columns plus `o_orderyear`) loads
+-- correctly into this 10-insertable-column `orders`: the extra column is
+-- ignored, not misaligned into a neighboring one.
 --
 -- Source: sources/databricks/scripts/setup_workload.sql (the workload)
 --         sources/databricks/queries/sample_olap_queries.sql (the ORDER BY
@@ -120,7 +127,7 @@ CREATE TABLE IF NOT EXISTS migration_demo.orders
     o_orderkey      Int64,
     o_custkey       Int64,
     o_orderstatus   LowCardinality(String),
-    o_totalprice    Decimal(15, 2),
+    o_totalprice    Decimal(18, 2),
     o_orderdate     Date32,
     o_orderpriority LowCardinality(String),
     o_clerk         String,

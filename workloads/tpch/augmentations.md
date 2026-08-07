@@ -27,6 +27,7 @@ Add an `order_metadata` column carrying these four keys per order:
 |---------------|-----------------------|
 | Snowflake     | `VARIANT` (populated via `OBJECT_CONSTRUCT`) |
 | BigQuery      | `STRUCT<...>`         |
+| Databricks    | `VARIANT` (populated via `parse_json`) |
 | PostgreSQL    | `JSONB`               |
 | ClickHouse OSS| `Map(String, String)` or `JSON` |
 
@@ -56,6 +57,7 @@ Also: cluster or partition `lineitem` on `l_shipdate` and order on
 |---------------|----------------|
 | Snowflake     | `delivery_at TIMESTAMP_TZ` + `CLUSTER BY (l_orderkey, l_shipdate)` |
 | BigQuery      | `delivery_at TIMESTAMP` + `PARTITION BY DATE(l_shipdate)` + `CLUSTER BY l_orderkey` |
+| Databricks    | `l_committed_at TIMESTAMP` (UTC-normalized) + `l_committed_at_ntz TIMESTAMP_NTZ` (naive) pair + liquid clustering `CLUSTER BY (l_shipdate, l_suppkey)` |
 | PostgreSQL    | `delivery_at TIMESTAMPTZ` + BRIN index on `l_shipdate` |
 | ClickHouse OSS| `delivery_at DateTime64(3, 'America/New_York')` + `ORDER BY (l_shipdate, l_orderkey)` |
 
@@ -75,6 +77,7 @@ Materialise a daily revenue rollup over `orders`, grouped by
 |---------------|------------------------|
 | Snowflake     | `DYNAMIC TABLE daily_order_summary` with `TARGET_LAG = '1 hour'` |
 | BigQuery      | `MATERIALIZED VIEW daily_order_summary` (auto-refresh on commit) |
+| Databricks    | `MATERIALIZED VIEW daily_order_summary` (serverless SQL warehouse only — skipped, not fatal, on a classic warehouse) |
 | PostgreSQL    | `MATERIALIZED VIEW daily_order_summary` (manual `REFRESH`) |
 | ClickHouse OSS| Pre-existing `MATERIALIZED VIEW mv_daily_stats` on `AggregatingMergeTree` |
 
@@ -97,10 +100,13 @@ Per-row generation rule (deterministic from `c_custkey`):
 |---------------|-------------|
 | Snowflake     | `ARRAY` of `OBJECT` (via `VARIANT`) |
 | BigQuery      | `ARRAY<STRUCT<line STRING, city STRING, country STRING>>` |
+| Databricks    | `ARRAY<STRUCT<status STRING, event_ts TIMESTAMP, location STRING>>` + a sibling `MAP<STRING, STRING>` — placed on `lineitem` (`l_shipping_events` / `l_attributes`), not `customer`; Databricks's demo shapes this augmentation as shipping events rather than contact addresses |
 | PostgreSQL    | `JSONB` array of objects |
 | ClickHouse OSS| `Array(Tuple(line String, city String, country String))` |
 
 **Migration decision:** ClickHouse `Array(Tuple(...))` (typed, fast) vs.
-`Array(JSON)` (lazy, flexible). Snowflake has no clean
-`ARRAY<STRUCT>` equivalent — partners migrating from Snowflake may not
-encounter this; that's fine. BigQuery and Postgres partners will.
+`Array(JSON)` (lazy, flexible), plus (for Databricks) a `Map(String,
+String)` vs. `Map(LowCardinality(String), String)` call for the sibling
+MAP column. Snowflake has no clean `ARRAY<STRUCT>` equivalent — partners
+migrating from Snowflake may not encounter this; that's fine. BigQuery,
+Databricks, and Postgres partners will.

@@ -1761,12 +1761,15 @@ mcpServers:
     timeout: 900000
     serverInstructions: |-
       Execute Python migration scripts inside the playground. Pre-installed:
-      snowflake-connector-python, psycopg2, clickhouse-connect, pyarrow.
+      snowflake-connector-python, psycopg2, clickhouse-connect, pyarrow,
+      databricks-sql-connector.
       Reachable hosts: postgres:5432, clickhouse-oss:8123, Snowflake (via
-      SNOWFLAKE_* env vars), ClickHouse Cloud (via CLICKHOUSE_CLOUD_*).
+      SNOWFLAKE_* env vars), Databricks (via DATABRICKS_* env vars),
+      ClickHouse Cloud (via CLICKHOUSE_CLOUD_*).
       Tools:
         - run_python(code, timeout_seconds=600) -> {stdout, stderr, exit_code, duration_seconds}
         - write_workspace_file(path, content) / read_workspace_file(path) / list_workspace_files()
-      Use this when the source is Snowflake (see snowflake-instructions.md).
+      Use this for any source's migration scripts (see that source's
+      *-instructions.md).
       Stream long outputs to the user. On errors, surface the full traceback
       and propose a fix before retrying.

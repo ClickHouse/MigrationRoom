@@ -5,8 +5,8 @@ to track progress on a source → ClickHouse Cloud migration. The phases
 map 1:1 to the dashboard's six steps and to each source's
 `sources/<source>/prompts/01..06-*.md` files.
 
-This checklist is shared across all four supported sources (Snowflake,
-BigQuery, Postgres, ClickHouse OSS). The type-mapping table in Phase 2
+This checklist is shared across all five supported sources (Snowflake,
+BigQuery, Databricks, Postgres, ClickHouse OSS). The type-mapping table in Phase 2
 is written with **Postgres-specific** types as a concrete example;
 other source engines have analogous mappings — see the per-source
 prompts and `librechat/sources/<source>-instructions.md` for the
@@ -20,6 +20,7 @@ authoritative lists.
 - [ ] Query patterns analysed — WHERE / GROUP BY / JOIN columns identified
 - [ ] Source-engine-specific features listed for translation
       (VARIANT / Streams / Dynamic Tables for Snowflake; STRUCT / Materialized Views for BigQuery;
+       VARIANT / liquid clustering / deletion vectors for Databricks;
        JSONB / arrays / ENUMs for Postgres; AggregatingMergeTree / MVs for CH OSS)
 
 ## Phase 2 — ClickHouse Schema Design
