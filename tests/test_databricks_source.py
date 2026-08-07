@@ -7,7 +7,9 @@ needs no connector installed.
 Run from the repo root:
     python3 -m pytest tests/test_databricks_source.py -v
 """
+import json
 import sys
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker" / "migration-runner"))
 
 from migrationkit.sources.databricks import (  # noqa: E402
+    DatabricksSource,
     normalize_host,
     parquet_only,
     split_namespace,
@@ -71,3 +74,74 @@ def test_parquet_only_drops_commit_protocol_markers():
 
 def test_parquet_only_is_case_insensitive():
     assert len(parquet_only([FakeObject("a/B.PARQUET", 1)])) == 1
+
+
+def _unconnected_source(catalog, schema):
+    """Build a DatabricksSource without touching __init__ (no network,
+    no connector import) — enough to exercise the pure `_fq` logic."""
+    src = DatabricksSource.__new__(DatabricksSource)
+    src.catalog = catalog
+    src.schema = schema
+    return src
+
+
+def test_fq_qualifies_a_bare_table_name():
+    src = _unconnected_source("migration_demo", "tpch")
+    assert src._fq("orders") == "migration_demo.tpch.orders"
+
+
+def test_fq_passes_through_an_already_qualified_name_unchanged():
+    src = _unconnected_source("migration_demo", "tpch")
+    assert src._fq("other_catalog.other_schema.orders") == "other_catalog.other_schema.orders"
+
+
+def test_fq_raises_for_bare_name_without_a_configured_namespace():
+    src = _unconnected_source(None, None)
+    with pytest.raises(ValueError):
+        src._fq("orders")
+
+
+class _FakeHTTPResponse:
+    """Minimal stand-in for what `urllib.request.urlopen` returns — supports
+    the context-manager protocol and the `.read()` that `json.load` uses,
+    without touching the network."""
+
+    def __init__(self, body):
+        self._raw = json.dumps(body).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        return self._raw
+
+
+@pytest.mark.parametrize(
+    "malformed_body",
+    [
+        None,  # null body
+        [],  # bare list body
+        {"res": "not-a-list"},  # res is a string
+        {"res": ["not-a-dict"]},  # res item not a dict
+        {"res": [{"metrics": "not-a-dict"}]},  # metrics not a dict
+    ],
+)
+def test_server_ms_from_history_api_returns_none_on_malformed_response(
+    monkeypatch, malformed_body
+):
+    """Regression test: the response shape is an admitted guess against a
+    live API. If the guess is wrong, this must degrade to None, never
+    raise — an uncaught exception here fails the whole benchmark row
+    instead of falling back to wall_ms."""
+    src = DatabricksSource.__new__(DatabricksSource)
+    src._host = "dbc-abc.cloud.databricks.com"
+    src._token = "fake-token"
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **kw: _FakeHTTPResponse(malformed_body)
+    )
+
+    assert src._server_ms_from_history_api("stmt-id-123") is None

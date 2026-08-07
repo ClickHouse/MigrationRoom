@@ -185,25 +185,31 @@ class DatabricksSource(Source):
         return self._server_ms_from_system_table(statement_id)
 
     def _server_ms_from_history_api(self, statement_id: str) -> float | None:
-        filter_by = json.dumps({"statement_ids": [statement_id]})
-        query = urllib.parse.urlencode({"filter_by": filter_by})
-        url = f"https://{self._host}/api/2.0/sql/history/queries?{query}"
-        request = urllib.request.Request(
-            url, headers={"Authorization": f"Bearer {self._token}"}
-        )
+        """Returns a float or None — never raises, even for a malformed or
+        hostile response body. The response shape is a guess against a
+        live API (see module docstring / _fetch_server_ms), so both the
+        network call *and* the body-processing that follows it must
+        degrade to None rather than let an AttributeError/TypeError
+        escape and fail the whole benchmark row."""
         try:
+            filter_by = json.dumps({"statement_ids": [statement_id]})
+            query = urllib.parse.urlencode({"filter_by": filter_by})
+            url = f"https://{self._host}/api/2.0/sql/history/queries?{query}"
+            request = urllib.request.Request(
+                url, headers={"Authorization": f"Bearer {self._token}"}
+            )
             with urllib.request.urlopen(request, timeout=10) as response:
                 body = json.load(response)
-        except (urllib.error.URLError, OSError, ValueError):
+            for item in body.get("res") or []:
+                metrics = item.get("metrics") or {}
+                for key in ("execution_time_ms", "total_time_ms"):
+                    if metrics.get(key) is not None:
+                        return float(metrics[key])
+                if item.get("duration") is not None:
+                    return float(item["duration"])
             return None
-        for item in body.get("res") or []:
-            metrics = item.get("metrics") or {}
-            for key in ("execution_time_ms", "total_time_ms"):
-                if metrics.get(key) is not None:
-                    return float(metrics[key])
-            if item.get("duration") is not None:
-                return float(item["duration"])
-        return None
+        except Exception:
+            return None
 
     def _server_ms_from_system_table(self, statement_id: str) -> float | None:
         # NOTE: deviates from the brief, which interpolated statement_id
@@ -255,6 +261,11 @@ class DatabricksSource(Source):
                 f"unload_to_s3: only parquet is supported, got {file_format!r}"
             )
 
+        # Resolve before the try so an unqualified `table` (usage error)
+        # raises its own ValueError instead of being caught below and
+        # re-wrapped as a misleading "permissions" RuntimeError.
+        fq_table = self._fq(table)
+
         target_uri = stage.s3_uri(run_id, table)
         cur = self._conn.cursor()
         try:
@@ -263,7 +274,7 @@ class DatabricksSource(Source):
                 cur.execute(
                     f"INSERT OVERWRITE DIRECTORY '{target_uri}'\n"
                     f"USING PARQUET\n"
-                    f"SELECT * FROM {self._fq(table)}"
+                    f"SELECT * FROM {fq_table}"
                 )
             except Exception as exc:
                 raise RuntimeError(
