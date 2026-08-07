@@ -99,6 +99,23 @@ def test_mutation_error_message_points_to_clickhousectl():
     assert "clickhousectl" in str(excinfo.value)
 
 
+def test_trailing_comment_after_semicolon_is_not_a_second_statement():
+    # Regression: sqlglot.parse() emits a synthetic exp.Semicolon node to
+    # carry a comment that trails the terminator. That node is truthy, so
+    # it survived the `if s` None-filter and made this look like two
+    # statements. It must not, since it fails closed either way but a
+    # trailing comment on a query is ordinary input.
+    assert guard("SELECT 1; -- comment") == "SELECT 1\nLIMIT 200"
+
+
+def test_trailing_comment_fix_does_not_widen_the_multi_statement_gate():
+    # Paired negative case: a *real* second statement after the comment
+    # must still be rejected. The exp.Semicolon filter must not swallow
+    # an actual statement, only the content-free placeholder node.
+    with pytest.raises(SqlNotAllowed):
+        guard("SELECT 1; -- comment\nDROP TABLE t")
+
+
 # --- LIMIT injection -------------------------------------------------------
 
 
@@ -140,6 +157,35 @@ def test_union_without_limit_gets_one_appended():
 
 def test_union_with_existing_limit_is_not_doubled():
     out = guard("SELECT 1 UNION ALL SELECT 2 LIMIT 1", max_rows=10)
+    assert out.lower().count("limit") == 1
+
+
+def test_parenthesized_select_without_limit_gets_one_appended():
+    # Regression: a top-level `(SELECT ...)` parses to exp.Subquery, not
+    # exp.Select/exp.Union, and was previously exempted from LIMIT
+    # injection entirely — silently defeating the row cap.
+    out = guard("(SELECT * FROM orders)", max_rows=50)
+    assert out == "(SELECT * FROM orders)\nLIMIT 50"
+
+
+def test_parenthesized_select_with_existing_limit_is_not_doubled():
+    # The existing LIMIT lives on the inner Select, not the outer
+    # Subquery; both slots must be checked or this gets a second LIMIT.
+    out = guard("(SELECT * FROM orders LIMIT 5)", max_rows=50)
+    assert out == "(SELECT * FROM orders LIMIT 5)"
+    assert out.lower().count("limit") == 1
+
+
+def test_parenthesized_union_without_limit_gets_one_appended():
+    out = guard("(SELECT * FROM a UNION ALL SELECT * FROM b)", max_rows=50)
+    assert out == "(SELECT * FROM a UNION ALL SELECT * FROM b)\nLIMIT 50"
+
+
+def test_parenthesized_union_with_existing_limit_is_not_doubled():
+    out = guard(
+        "(SELECT * FROM a UNION ALL SELECT * FROM b LIMIT 5)", max_rows=50
+    )
+    assert out == "(SELECT * FROM a UNION ALL SELECT * FROM b LIMIT 5)"
     assert out.lower().count("limit") == 1
 
 

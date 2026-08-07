@@ -63,11 +63,39 @@ def _strip_trailing_semicolon(sql: str, toks) -> str:
     return sql.strip()
 
 
+def _unwrap_subquery(node: exp.Expression) -> exp.Expression:
+    """Follow `Subquery.this` down to the innermost wrapped query.
+
+    `(SELECT ...)` parses to `exp.Subquery` wrapping an `exp.Select` (or
+    `exp.Union`), and a `LIMIT` already present in the source SQL may live
+    on that inner node rather than on the `Subquery` itself — e.g.
+    `(SELECT * FROM t LIMIT 5)` puts the limit on the inner `Select`, while
+    `(SELECT * FROM t) LIMIT 5` puts it on the outer `Subquery`. Checking
+    only one of the two slots would miss an existing limit and double it.
+    """
+    while isinstance(node, exp.Subquery) and node.this is not None:
+        node = node.this
+    return node
+
+
+def _existing_limit(root: exp.Expression) -> exp.Expression | None:
+    """Return the existing LIMIT clause for `root`, if any, checking both
+    the node itself and, for a parenthesized query, the query it wraps."""
+    limit = root.args.get("limit")
+    if limit is not None:
+        return limit
+    inner = _unwrap_subquery(root)
+    if inner is not root:
+        return inner.args.get("limit")
+    return None
+
+
 def guard(sql: str, max_rows: int = 200) -> str:
     """Validate `sql` as one read-only statement and return it ready to run.
 
-    A row cap is appended to SELECT/UNION statements that don't already
-    have one, so an unbounded scan can't stream a whole fact table into the
+    A row cap is appended to SELECT/UNION statements — including ones
+    wrapped in parentheses, e.g. `(SELECT ...)` — that don't already have
+    one, so an unbounded scan can't stream a whole fact table into the
     chat context. The original statement text is returned (never a
     sqlglot-regenerated form) with only the trailing statement terminator
     removed and, when applicable, a LIMIT clause appended.
@@ -93,7 +121,15 @@ def guard(sql: str, max_rows: int = 200) -> str:
         )
 
     try:
-        stmts = [s for s in sqlglot.parse(sql, dialect=_DIALECT) if s]
+        # `exp.Semicolon` is a content-free node sqlglot appends to hold a
+        # comment that trails the statement terminator (e.g. `SELECT 1; --
+        # comment`); it is truthy, so it must be filtered alongside `None`
+        # or a harmless trailing comment reads as a second statement.
+        stmts = [
+            s
+            for s in sqlglot.parse(sql, dialect=_DIALECT)
+            if s and not isinstance(s, exp.Semicolon)
+        ]
     except (ParseError, TokenError) as exc:
         # Unparseable is rejected UNLESS the statement's leading token is a
         # read-only verb — this covers Databricks extensions sqlglot's
@@ -137,6 +173,9 @@ def guard(sql: str, max_rows: int = 200) -> str:
         )
 
     body = _strip_trailing_semicolon(sql, toks)
-    if isinstance(root, (exp.Select, exp.Union)) and root.args.get("limit") is None:
+    if (
+        isinstance(root, (exp.Select, exp.Union, exp.Subquery))
+        and _existing_limit(root) is None
+    ):
         body = f"{body}\nLIMIT {max_rows}"
     return body
