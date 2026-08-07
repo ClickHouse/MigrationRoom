@@ -365,6 +365,9 @@ def list_source_databases(src: str, refresh: bool = False) -> list[str]:
         elif src == "bigquery":
             from .sources.bigquery import BigQuerySource
             dbs = BigQuerySource.list_databases_from_env()
+        elif src == "databricks":
+            from .sources.databricks import DatabricksSource
+            dbs = DatabricksSource.list_databases_from_env()
         else:
             raise HTTPException(
                 status_code=404,
