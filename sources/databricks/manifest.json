@@ -1,0 +1,6 @@
+{
+  "label": "Databricks",
+  "default_database_env": "DATABRICKS_NAMESPACE",
+  "default_database_fallback": "migration_demo.tpch",
+  "agent_name": "Databricks → ClickHouse Cloud"
+}

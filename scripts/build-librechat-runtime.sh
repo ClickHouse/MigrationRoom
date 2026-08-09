@@ -15,6 +15,7 @@
 # Optional sources (gated by Compose profile -> only included when profile is active):
 #   snowflake-source -> profile "snowflake"
 #   bigquery-source  -> profile "bigquery"
+#   databricks-source -> profile "databricks"
 # All other MCPs are unconditional.
 
 set -euo pipefail
@@ -72,6 +73,14 @@ if is_active bigquery; then
 else
     drop_mcp "bigquery-source" "bigquery-source"
     removed+=("bigquery-source")
+fi
+
+# databricks-source: MCP key "databricks-source", host is databricks-mcp
+if is_active databricks; then
+    kept+=("databricks-source")
+else
+    drop_mcp "databricks-source" "databricks-mcp"
+    removed+=("databricks-source")
 fi
 
 echo "Runtime librechat config: $RUNTIME_FILE"

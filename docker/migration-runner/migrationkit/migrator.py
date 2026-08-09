@@ -242,9 +242,9 @@ class Migrator:
         """Register a table for S3-staged migration: source unloads to
         S3, then ClickHouse Cloud loads via `INSERT FROM s3(...)`.
 
-        Only sources that override `Source.unload_to_s3()` (Snowflake
-        and ClickHouse OSS today) support this path — Migrator validates
-        at `run()` time."""
+        Only sources that override `Source.unload_to_s3()` (Snowflake,
+        ClickHouse OSS, and Databricks today) support this path —
+        Migrator validates at `run()` time."""
         resolved_target = target_table or name
         _validate_target_table_name(resolved_target)
         plan = _S3TablePlan(

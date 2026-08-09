@@ -1,4 +1,4 @@
-.PHONY: setup up up-snowflake up-bigquery down reset reset-agent health logs pull diagram snowflake-setup snowflake-provision bigquery-provision tpch-data tpch-load-bigquery tpch-load-postgres tpch-load-clickhouse-oss migration-status
+.PHONY: setup up up-snowflake up-bigquery up-databricks down reset reset-agent health logs pull diagram snowflake-setup snowflake-provision bigquery-provision databricks-setup databricks-provision databricks-provision-workspace tpch-data tpch-load-bigquery tpch-load-postgres tpch-load-clickhouse-oss migration-status
 
 setup:
 	@echo "Setting up MigrationRoom..."
@@ -15,7 +15,8 @@ setup:
 	@mkdir -p secrets && [ -f secrets/gcp-key.json ] || echo '{}' > secrets/gcp-key.json
 	@# Seed a runtime librechat.yaml so `docker compose up` works even
 	@# before the user has run one of the up* targets. Defaults to empty
-	@# profiles, which strips snowflake-source and bigquery-source.
+	@# profiles, which strips snowflake-source, bigquery-source, and
+	@# databricks-mcp.
 	@COMPOSE_PROFILES="" bash scripts/build-librechat-runtime.sh
 	@echo "✅ Setup complete. Run: make up"
 
@@ -87,6 +88,57 @@ bigquery-provision:
 	@echo ""
 	@echo "Capture the .env block with: cd sources/bigquery/terraform && terraform output -raw env_block"
 
+up-databricks: export COMPOSE_PROFILES := databricks
+up-databricks:
+	@echo "Regenerating librechat.runtime.yaml for active profiles: databricks"
+	@bash scripts/build-librechat-runtime.sh
+	@echo "Pulling images..."
+	docker compose pull
+	@echo "Building custom containers..."
+	docker compose build
+	@echo "Starting services (including databricks-mcp)..."
+	docker compose up -d
+	@echo ""
+	@echo "Container status:"
+	@docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+	@echo ""
+	@echo "If databricks-mcp shows unhealthy, check: docker compose logs databricks-mcp"
+	@echo "(DATABRICKS_HOST / DATABRICKS_HTTP_PATH / DATABRICKS_TOKEN in .env must be set.)"
+
+databricks-setup:
+	@echo "Installing setup dependencies (databricks-sql-connector)…"
+	@python3 -m pip install --quiet -r sources/databricks/scripts/requirements.txt
+	@echo "Setting up migration_demo.tpch workload in Databricks…"
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	  python3 sources/databricks/scripts/setup_workload.py
+
+databricks-provision:
+	@echo "Provisioning the Databricks demo objects with Terraform…"
+	cd sources/databricks/terraform/demo && terraform init && terraform apply
+	@echo ""
+	@echo "Capture the .env block with:"
+	@echo "  cd sources/databricks/terraform/demo && terraform output -raw env_block"
+
+databricks-provision-workspace:
+	@echo "Phase 1/2 — creating a serverless Databricks workspace…"
+	cd sources/databricks/terraform/workspace && terraform init && terraform apply
+	@echo ""
+	@echo "Phase 2/2 — provisioning the demo objects into the new workspace…"
+	@# Hand the new workspace URL and the account SP's OAuth credentials to
+	@# the demo module. Terraform auto-loads *.auto.tfvars.json, so no
+	@# copy-paste step. The merge logic lives in a script, not an inline
+	@# heredoc: a heredoc spanning multiple Makefile recipe lines only
+	@# works under GNU Make's `.ONESHELL` (added in 3.82) — plain `make`
+	@# on macOS is still 3.81, which runs each recipe line in its own
+	@# shell and silently breaks a multi-line heredoc.
+	cd sources/databricks/terraform/workspace && terraform output -json > /tmp/mr-dbx-workspace-out.json
+	python3 sources/databricks/scripts/merge_workspace_tfvars.py /tmp/mr-dbx-workspace-out.json
+	cd sources/databricks/terraform/demo && terraform init && terraform apply
+	@rm -f /tmp/mr-dbx-workspace-out.json
+	@echo ""
+	@echo "Capture the .env block with:"
+	@echo "  cd sources/databricks/terraform/demo && terraform output -raw env_block"
+
 # Shared TPC-H workload. BigQuery is the first loader; future sources
 # get sibling targets (tpch-load-postgres, tpch-load-clickhouse-oss).
 # The Snowflake source keeps `snowflake-setup` — different mechanics
@@ -133,7 +185,7 @@ tpch-load-clickhouse-oss: tpch-data
 	  python3 workloads/tpch/clickhouse-oss/load.py
 
 down:
-	docker compose --profile snowflake --profile bigquery down
+	docker compose --profile snowflake --profile bigquery --profile databricks down
 
 reset:
 	@bash scripts/reset.sh

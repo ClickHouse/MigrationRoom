@@ -11,7 +11,12 @@ ClickHouse OSS all have loaders under `<source>/`. The Snowflake source
 keeps its existing
 [`SNOWFLAKE_SAMPLE_DATA.TPCH_SF1`](../../sources/snowflake/scripts/setup_workload.sql)
 copy path because Snowflake hosts the data for free — different mechanics,
-same end-state.
+same end-state. The Databricks source likewise keeps its own
+[`setup_workload.sql`](../../sources/databricks/scripts/setup_workload.sql),
+downsampling the built-in `samples.tpch` catalog instead of loading from
+this directory's `.tbl` files — but it implements the same four-item
+augmentation contract in Databricks's idiom (see
+[`augmentations.md`](augmentations.md) for the per-engine breakdown).
 
 The Postgres and ClickHouse OSS loaders create a NEW `tpch` database
 alongside the bundled e-commerce / web-analytics workloads — partners

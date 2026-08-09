@@ -29,6 +29,7 @@ from .sources import (
     PostgresSource,
     ClickHouseOssSource,
     BigQuerySource,
+    DatabricksSource,
 )
 from .sources.base import UnloadResult
 from .targets import ClickHouseTarget
@@ -48,6 +49,7 @@ __all__ = [
     "PostgresSource",
     "ClickHouseOssSource",
     "BigQuerySource",
+    "DatabricksSource",
     "ClickHouseTarget",
     "S3Stage",
     "GCSStage",

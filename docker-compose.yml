@@ -229,6 +229,40 @@ services:
     networks:
       - playground-net
 
+  # ── Databricks Source MCP ───────────────────────────────────
+  # Purpose-built read-only MCP (docker/databricks-mcp) over a Databricks
+  # SQL warehouse. Databricks publishes no introspect-and-SELECT MCP for
+  # warehouses — their `databricks-mcp` package is an OAuth helper for the
+  # hosted UC-functions / vector-search / Genie servers — so this is ours,
+  # in the same spirit as clickhousectl-mcp. Because we author the tool
+  # schemas, no Gemini shim is needed (unlike snowflake-source).
+  #
+  # Profile-gated: partners using Databricks set DATABRICKS_* in .env then
+  # run `make up-databricks` (or `docker compose --profile databricks up -d`).
+  databricks-mcp:
+    profiles: ["databricks"]
+    build: ./docker/databricks-mcp
+    environment:
+      DATABRICKS_HOST: ${DATABRICKS_HOST:-}
+      DATABRICKS_HTTP_PATH: ${DATABRICKS_HTTP_PATH:-}
+      DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+      DATABRICKS_NAMESPACE: ${DATABRICKS_NAMESPACE:-}
+    ports:
+      - "8008:8000"
+    # Probe /sse with Python stdlib — the image is python:3.12-slim and has
+    # no curl/wget. The connection to Databricks is lazy (opened per tool
+    # call), so this passes even with invalid credentials; that's
+    # deliberate, so a credential typo surfaces as a clear tool error in
+    # chat rather than a container that won't start.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/sse', timeout=2).status == 200 else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - playground-net
+
   # ── Migration Runner ────────────────────────────────────────
   # Executes Python migration scripts in-chat (via run_python MCP tool)
   # so the agent can drive end-to-end migrations without asking the
@@ -329,8 +363,10 @@ services:
     # `docker compose ps` instead of a silent runtime bug.
     #
     # snowflake-source / snowflake-source-shim are profile-gated to
-    # `snowflake`; Compose silently skips depends_on entries for services
-    # excluded by the active profile set, so leaving them here is safe.
+    # `snowflake`, bigquery-source to `bigquery`, and databricks-mcp to
+    # `databricks`; Compose silently skips depends_on entries for
+    # services excluded by the active profile set, so leaving them
+    # here is safe.
     depends_on:
       mongodb:
         condition: service_healthy
@@ -352,6 +388,9 @@ services:
         # within ~1 s of starting, so "started" is the strongest
         # check we can express.
         condition: service_started
+        required: false
+      databricks-mcp:
+        condition: service_healthy
         required: false
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3080/health || exit 1"]
@@ -377,9 +416,9 @@ services:
       MONGO_URI: "mongodb://mongodb:27017/LibreChat"
       LIBRECHAT_URL: "http://librechat:3080"
       # Forwarded from the host's $COMPOSE_PROFILES so the agent loop knows
-      # which optional sources (snowflake, bigquery) the partner actually
-      # turned on. Agents for inactive sources are skipped and any stale
-      # row from a previous profile is deleted.
+      # which optional sources (snowflake, bigquery, databricks) the partner
+      # actually turned on. Agents for inactive sources are skipped and any
+      # stale row from a previous profile is deleted.
       ACTIVE_PROFILES: ${COMPOSE_PROFILES:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
@@ -436,6 +475,7 @@ services:
           "postgres|Postgres → ClickHouse Cloud|POSTGRES"
           "snowflake|Snowflake → ClickHouse Cloud|SNOWFLAKE"
           "bigquery|BigQuery → ClickHouse Cloud|BIGQUERY"
+          "databricks|Databricks → ClickHouse Cloud|DATABRICKS"
           "clickhouse-oss|ClickHouse OSS → ClickHouse Cloud|CLICKHOUSE_OSS"
         )
         SHARED_MCPS=(clickhousectl clickhouse-docs migration-runner)
@@ -447,6 +487,7 @@ services:
         declare -A OPTIONAL_PROFILE=(
           [snowflake]=snowflake
           [bigquery]=bigquery
+          [databricks]=databricks
         )
         NORM_PROFILES=",$$(echo "$${ACTIVE_PROFILES:-}" | tr ' ' ',' | tr -s ','),"
 

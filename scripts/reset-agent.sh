@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Delete the four pre-built migration agents from MongoDB and re-run
+# Delete the five pre-built migration agents from MongoDB and re-run
 # librechat-init to recreate them. Use after changing AGENT_PROVIDER /
 # AGENT_MODEL (or any AGENT_PROVIDER_<SOURCE>) in .env, since the init
 # container's idempotency check skips agents that already match.
@@ -12,6 +12,7 @@ AGENTS=(
     "Snowflake → ClickHouse Cloud"
     "BigQuery → ClickHouse Cloud"
     "ClickHouse OSS → ClickHouse Cloud"
+    "Databricks → ClickHouse Cloud"
 )
 
 echo "This will delete these agents from MongoDB:"
@@ -27,7 +28,8 @@ docker compose exec -T mongodb mongosh "mongodb://mongodb:27017/LibreChat" --qui
             "Postgres → ClickHouse Cloud",
             "Snowflake → ClickHouse Cloud",
             "BigQuery → ClickHouse Cloud",
-            "ClickHouse OSS → ClickHouse Cloud"
+            "ClickHouse OSS → ClickHouse Cloud",
+            "Databricks → ClickHouse Cloud"
         ]}
     })
 '
@@ -46,6 +48,9 @@ if [ -z "${COMPOSE_PROFILES:-}" ]; then
     fi
     if grep -q '^bigquery-source$' <<<"$running"; then
         detected="${detected:+$detected,}bigquery"
+    fi
+    if grep -q '^databricks-mcp$' <<<"$running"; then
+        detected="${detected:+$detected,}databricks"
     fi
     export COMPOSE_PROFILES="$detected"
     echo "Detected active profiles: ${COMPOSE_PROFILES:-<none>}"
