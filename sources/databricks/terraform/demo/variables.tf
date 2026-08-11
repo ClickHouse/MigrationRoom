@@ -75,7 +75,7 @@ variable "service_principal_name" {
 }
 
 variable "run_workload_setup" {
-  description = "Run sources/databricks/scripts/setup_workload.py after provisioning to create the TPC-H workload. Requires python3 and pip on the machine running terraform."
+  description = "Run sources/databricks/scripts/setup_workload.py after provisioning. This does more than seed data: the script's CREATE CATALOG/SCHEMA IF NOT EXISTS statements are what create migration_demo.tpch in the first place (Terraform itself no longer creates the catalog/schema — see main.tf), and databricks_grants.demo_catalog is skipped entirely when this is false, since there would be nothing to grant on. Requires python3 and pip on the machine running terraform. Setting this to false means YOU must create migration_demo.tpch and grant the demo service principal USE_CATALOG/USE_SCHEMA/SELECT on it yourself — otherwise the module hands you a service principal with a token and no access to anything."
   type        = bool
   default     = true
 }

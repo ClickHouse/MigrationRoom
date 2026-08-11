@@ -155,17 +155,29 @@ module creates and why account-admin (not workspace-admin) is required.
 ### Existing workspace, provision the demo objects
 
 You already have a Databricks workspace with Unity Catalog. Terraform
-creates the catalog/schema, a dedicated serverless SQL warehouse, a
-demo service principal + token, and (optionally) the S3 staging path,
-then seeds the workload for you.
+creates a dedicated serverless SQL warehouse, a demo service principal
++ token, and (optionally) the S3 staging path, then seeds the workload
+(which is what actually creates the catalog/schema — see
+[terraform/demo/README.md](terraform/demo/README.md)) for you.
+
+> **If this workspace has other users on it: read this before running
+> `make databricks-provision`.** This module grants its demo service
+> principal permission to use PATs by declaring the workspace's entire
+> token-usage permission list, which **replaces** it rather than adding
+> to it. It preserves access for the built-in `users` group, but if
+> some other user or group already holds PAT access on this workspace,
+> applying this module silently revokes it and deletes their active
+> tokens. See the prominent warning in
+> [terraform/demo/README.md](terraform/demo/README.md#prerequisites)
+> for exactly what to check first and how to add an exception.
 
 ```bash
 cd sources/databricks/terraform/demo
 cp terraform.tfvars.example terraform.tfvars
 # Edit: workspace_url, databricks_token
-# (this module creates a catalog, and CREATE CATALOG is a metastore-level
-# privilege, not a workspace-level one — see the README's Prerequisites
-# for what the PAT's principal needs)
+# (the workload setup script this module runs creates the catalog, and
+# CREATE CATALOG is a metastore-level privilege, not a workspace-level
+# one — see the README's Prerequisites for what the PAT's principal needs)
 
 cd ../../../..
 make databricks-provision

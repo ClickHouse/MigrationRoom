@@ -17,9 +17,9 @@ that module creates a fresh serverless workspace and chains into this one.
 | `databricks_service_principal.demo` | Dedicated principal the playground authenticates as |
 | `databricks_permissions.token_usage` | Grants the demo principal (and preserves the `users` group's) `CAN_USE` on PAT tokens — required before `databricks_obo_token.demo` can be created |
 | `databricks_obo_token.demo` | 90-day on-behalf-of token for that principal |
-| `databricks_grants.demo_catalog` | USE_CATALOG/USE_SCHEMA/SELECT on the demo catalog for the demo principal |
+| `databricks_grants.demo_catalog` | USE_CATALOG/USE_SCHEMA/SELECT on the demo catalog for the demo principal — only created when `run_workload_setup=true` (see below) |
 | `databricks_permissions.warehouse_usage` | CAN_USE on the warehouse for the demo principal |
-| `null_resource.setup_workload` | Runs `sources/databricks/scripts/setup_workload.py` against the new warehouse to seed TPC-H — this is also what creates the `migration_demo.tpch` catalog/schema (see below), not a Terraform resource |
+| `null_resource.setup_workload` | Only when `run_workload_setup=true`. Runs `sources/databricks/scripts/setup_workload.py` against the new warehouse to seed TPC-H — this is also what creates the `migration_demo.tpch` catalog/schema (see below), not a Terraform resource |
 | *(optional, `enable_s3_staging=true`)* `aws_s3_bucket.staging` + lifecycle + public-access-block | Disposable staging bucket for staged Parquet unloads (7-day expiry) |
 | *(optional)* `databricks_storage_credential.staging`, `aws_iam_role.staging`, `databricks_external_location.staging` | Unity Catalog external location backing the bucket |
 | *(optional)* `aws_iam_user.staging_reader` + access key | Credentials ClickHouse Cloud's `s3()` table function uses to read the staged Parquet — separate from the Unity Catalog credential, which authenticates via an assumed role, not keys |
@@ -43,7 +43,38 @@ readable without any grant. Nothing in this module's runtime path needs
 an explicit grant on it — only `setup_workload.sql` references `samples`,
 and that SQL runs as the provisioning identity, not the demo principal.
 
+**`run_workload_setup` means more than "seed data."** Since the catalog
+is created by `setup_workload.sql` and not by Terraform (above),
+`run_workload_setup=false` means the catalog/schema never get created
+*and* `databricks_grants.demo_catalog` is skipped (it's gated on the
+same variable — otherwise it would fail trying to grant on a catalog
+nothing created). If you set this to `false`, you are responsible for
+creating `migration_demo.tpch` and granting the demo service principal
+`USE_CATALOG`/`USE_SCHEMA`/`SELECT` on it yourself, before the
+playground tries to use it — otherwise you end up with a service
+principal that has a valid token and no access to anything.
+
 ## Prerequisites
+
+> **Warning — shared/existing workspaces: this module can revoke other
+> people's PAT access.** `databricks_permissions.token_usage` (created
+> by this module — see "What this module creates" above) uses
+> `authorization = "tokens"`, which **replaces the workspace's entire
+> token-usage ACL**, not just adds to it. This module explicitly
+> preserves `CAN_USE` for the demo service principal and for the
+> built-in `users` group — but if any **other** principal (a specific
+> user, or a group like `data-engineers`) currently holds `CAN_USE` or
+> `CAN_MANAGE` on tokens in the target workspace, applying this module
+> silently revokes it and deletes their active tokens. Terraform has no
+> way to discover and preserve an ACL it wasn't told about.
+>
+> **Before running `terraform apply` against a workspace anyone else
+> already uses**, check who currently has token access — workspace
+> Settings → Advanced → Personal Access Tokens in the UI, or
+> `GET /api/2.0/permissions/authorization/tokens` — and note any
+> principal other than the `users` group. If you find one, add it as an
+> additional `access_control` block in `databricks_permissions.token_usage`
+> in `main.tf` before applying, the same way `users` is preserved there.
 
 - An existing Databricks workspace with Unity Catalog enabled.
 - A personal access token (PAT) for a **workspace admin** — used only to

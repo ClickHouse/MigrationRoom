@@ -138,7 +138,18 @@ resource "databricks_obo_token" "demo" {
 # catalog itself is created by setup_workload.sql, not by Terraform (see
 # the comment above). Without this, Terraform could try to grant on a
 # catalog that doesn't exist yet.
+#
+# count mirrors null_resource.setup_workload's: the catalog only comes
+# into existence as a side effect of that SQL script running. With
+# run_workload_setup = false there is no null_resource instance, the
+# depends_on above would be satisfied vacuously (Terraform doesn't wait
+# on zero instances), and this grant would otherwise run against a
+# catalog nothing ever created — failing with a confusing
+# catalog-not-found error instead of skipping cleanly. Gating on the
+# same variable makes that failure mode impossible instead of just
+# less likely.
 resource "databricks_grants" "demo_catalog" {
+  count      = var.run_workload_setup ? 1 : 0
   depends_on = [null_resource.setup_workload]
   catalog    = var.catalog_name
   grant {
