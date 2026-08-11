@@ -16,8 +16,8 @@ output "summary" {
   description = "Human-readable summary of what was created."
   value = {
     workspace_url     = var.workspace_url
-    catalog           = databricks_catalog.demo.name
-    schema            = databricks_schema.demo.name
+    catalog           = var.catalog_name
+    schema            = var.schema_name
     namespace         = local.namespace
     warehouse         = databricks_sql_endpoint.demo.name
     warehouse_path    = databricks_sql_endpoint.demo.odbc_params[0].path

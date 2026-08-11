@@ -13,17 +13,35 @@ that module creates a fresh serverless workspace and chains into this one.
 
 | Resource | Purpose |
 |---|---|
-| `databricks_catalog.demo` | Unity Catalog catalog for the demo (`force_destroy=true`) |
-| `databricks_schema.demo` | Schema inside the catalog; together they form `DATABRICKS_NAMESPACE` |
 | `databricks_sql_endpoint.demo` | Serverless PRO SQL warehouse — serverless is required for the workload's materialized-view augmentation |
 | `databricks_service_principal.demo` | Dedicated principal the playground authenticates as |
+| `databricks_permissions.token_usage` | Grants the demo principal (and preserves the `users` group's) `CAN_USE` on PAT tokens — required before `databricks_obo_token.demo` can be created |
 | `databricks_obo_token.demo` | 90-day on-behalf-of token for that principal |
-| `databricks_grants.demo_catalog` / `databricks_grants.samples` | USE_CATALOG/USE_SCHEMA/SELECT on the demo catalog and on `samples` (the workload CTAS-copies from `samples.tpch`) |
+| `databricks_grants.demo_catalog` | USE_CATALOG/USE_SCHEMA/SELECT on the demo catalog for the demo principal |
 | `databricks_permissions.warehouse_usage` | CAN_USE on the warehouse for the demo principal |
-| `null_resource.setup_workload` | Runs `sources/databricks/scripts/setup_workload.py` against the new warehouse to seed TPC-H |
+| `null_resource.setup_workload` | Runs `sources/databricks/scripts/setup_workload.py` against the new warehouse to seed TPC-H — this is also what creates the `migration_demo.tpch` catalog/schema (see below), not a Terraform resource |
 | *(optional, `enable_s3_staging=true`)* `aws_s3_bucket.staging` + lifecycle + public-access-block | Disposable staging bucket for staged Parquet unloads (7-day expiry) |
 | *(optional)* `databricks_storage_credential.staging`, `aws_iam_role.staging`, `databricks_external_location.staging` | Unity Catalog external location backing the bucket |
 | *(optional)* `aws_iam_user.staging_reader` + access key | Credentials ClickHouse Cloud's `s3()` table function uses to read the staged Parquet — separate from the Unity Catalog credential, which authenticates via an assumed role, not keys |
+
+No `databricks_catalog`/`databricks_schema` resource here on purpose:
+serverless workspaces use Default Storage, which has no storage-root URL
+to hand to `databricks_catalog`'s `storage_root` argument (the only
+location argument this provider version exposes). Databricks' own
+guidance for Default Storage is that a plain `CREATE CATALOG IF NOT
+EXISTS` needs no location, and `setup_workload.sql` already does exactly
+that — so the catalog/schema are created by the SQL script, not by
+Terraform. This works unchanged on a storage-rooted metastore too.
+One consequence: `terraform destroy` no longer drops the catalog — see
+"Cost and teardown" below.
+
+No grant on `samples` either (a previous version of this module had
+one): `samples` is a Databricks-managed system catalog, `MANAGE` on it
+(needed to change its grants) isn't held
+by anyone in a normal account, and Databricks documents `samples` as
+readable without any grant. Nothing in this module's runtime path needs
+an explicit grant on it — only `setup_workload.sql` references `samples`,
+and that SQL runs as the provisioning identity, not the demo principal.
 
 ## Prerequisites
 
@@ -35,23 +53,21 @@ that module creates a fresh serverless workspace and chains into this one.
   service principal — this is how the chained call from `../workspace`
   authenticates, since a freshly created workspace has no PAT yet. Supply
   exactly one of the two.
-- **If chaining from `../workspace`:** this module creates
-  `databricks_catalog.demo`, and `CREATE CATALOG` is a metastore-level
-  privilege, not a workspace-level one. The OAuth identity therefore needs
-  to be the account admin service principal described in
-  `../workspace/README.md` (account admin implies metastore-admin
-  capability) — a principal scoped to only workspace-admin will
-  authenticate but fail at catalog creation.
+- **If chaining from `../workspace`:** `setup_workload.sql` (run by
+  `null_resource.setup_workload`) is what creates the `migration_demo`
+  catalog and `tpch` schema, via `CREATE CATALOG IF NOT EXISTS` /
+  `CREATE SCHEMA IF NOT EXISTS` — Terraform itself no longer creates
+  them (see "What this module creates" above). That still requires
+  `CREATE CATALOG`, a metastore-level privilege, on whichever identity
+  the provisioner PAT (`databricks_token.provisioner`) runs as. The
+  OAuth identity therefore needs to be the account admin service
+  principal described in `../workspace/README.md` (account admin
+  implies metastore-admin capability) — a principal scoped to only
+  workspace-admin will authenticate but fail when the SQL script tries
+  to create the catalog.
 - `python3` and `pip` on the machine running `terraform` — the
   `null_resource.setup_workload` provisioner shells out to
   `setup_workload.py`.
-- **`databricks_grants.samples` can fail on the first `apply`:** the
-  built-in `samples` catalog is often owned by a different metastore
-  admin than the identity running Terraform, in which case granting on
-  it fails at apply time. If that happens, have the metastore admin
-  grant ownership (or `SELECT`/`USE CATALOG`/`USE SCHEMA` on
-  `samples.tpch` directly) to your provisioning principal and re-apply
-  — this is a per-account permission quirk, not a bug in the module.
 - **Only if `enable_s3_staging=true`:** AWS credentials in the shell
   (`AWS_PROFILE`, or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) with
   permission to create S3 buckets, an IAM role, an IAM user, and policies.
@@ -116,9 +132,22 @@ warehouse still bills, so don't raise this casually.
 terraform destroy
 ```
 
-removes everything this module created. The catalog and schema are created
-with `force_destroy = true` and the staging bucket with `force_destroy = true`,
-so destroy won't wedge on leftover demo tables or objects.
+removes everything this module created. The staging bucket is created with
+`force_destroy = true`, so destroy won't wedge on leftover objects in it.
+
+**Regression: `terraform destroy` no longer removes the catalog.** Because
+the `migration_demo` catalog/schema are created by `setup_workload.sql`
+(see "What this module creates" above) rather than by a Terraform
+resource, `terraform destroy` has nothing to target and leaves them
+behind. Drop them by hand if you want a full teardown:
+
+```sql
+DROP CATALOG migration_demo CASCADE;
+```
+
+Run that against the workspace (e.g. via the SQL editor, or `databricks
+sql`) as an identity with `MANAGE` on the catalog — the setup/provisioner
+identity or an account/workspace admin both qualify.
 
 ## Serverless egress caveat
 

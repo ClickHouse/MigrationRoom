@@ -48,20 +48,28 @@ locals {
 }
 
 # ── Unity Catalog namespace ──────────────────────────────────────────
-resource "databricks_catalog" "demo" {
-  name    = var.catalog_name
-  comment = "MigrationRoom demo catalog — TPC-H with Databricks-specific augmentations."
-  # Keeps `terraform destroy` from failing on a catalog that still has
-  # tables in it. This is a throwaway demo catalog by construction.
-  force_destroy = true
-}
-
-resource "databricks_schema" "demo" {
-  catalog_name  = databricks_catalog.demo.name
-  name          = var.schema_name
-  comment       = "TPC-H SF1 copied from samples.tpch, plus Delta augmentations."
-  force_destroy = true
-}
+# No databricks_catalog/databricks_schema resources here on purpose.
+# Serverless workspaces use Default Storage, which has no storage-root
+# URL — and storage_root is the only location argument this provider
+# version (1.124.0) exposes on databricks_catalog. Trying to create the
+# catalog through Terraform fails with "Metastore storage root URL does
+# not exist" on Default Storage.
+#
+# Databricks' own guidance for serverless/Default-Storage workspaces is
+# that a plain `CREATE CATALOG IF NOT EXISTS` (no MANAGED LOCATION)
+# works fine — and sources/databricks/scripts/setup_workload.sql already
+# runs exactly that (`CREATE CATALOG IF NOT EXISTS migration_demo` /
+# `CREATE SCHEMA IF NOT EXISTS migration_demo.tpch`) before seeding any
+# tables. So the catalog/schema are created by the SQL script via
+# null_resource.setup_workload below, not by Terraform. This also works
+# unchanged on a storage-rooted (non-Default-Storage) metastore, since
+# `IF NOT EXISTS` doesn't care whether a location was supplied — so this
+# one fix serves both the new-environment and existing-workspace paths.
+#
+# Consequence: `terraform destroy` no longer drops the catalog (there's
+# no resource for it to destroy). See the Teardown section of
+# ../../GUIDE.md and this module's README for the manual
+# `DROP CATALOG migration_demo CASCADE;` needed to fully tear down.
 
 # ── Serverless SQL warehouse ─────────────────────────────────────────
 # Serverless matters beyond convenience: the workload's materialized-view
@@ -82,33 +90,74 @@ resource "databricks_service_principal" "demo" {
   workspace_access      = true
 }
 
+# The demo service principal has no permission to use PATs by default —
+# only account-admin identities (like the provisioner above) get that
+# implicitly. databricks_obo_token needs the principal to hold CAN_USE
+# on the workspace's "tokens" authorization object, or it fails with
+# "does not have permission to use tokens."
+#
+# HAZARD: a databricks_permissions resource with authorization = "tokens"
+# REPLACES the whole token-usage ACL, not just adds to it. Per the
+# provider's own docs: "A given declaration of
+# databricks_permissions.token_usage would OVERWRITE permissions to use
+# PAT tokens from any existing groups with token usage permissions such
+# as the `users` group. To avoid this, be sure to include any desired
+# groups in additional access_control blocks." This module also runs
+# against pre-existing workspaces (`make databricks-provision`), so
+# without the second access_control block below, applying this would
+# silently revoke every other user's ability to mint a PAT on someone's
+# real workspace — a destructive side effect far outside this module's
+# stated purpose. The `users` group is Databricks' built-in
+# "everyone" group and is always present, so a literal group name is
+# fine here — no data source needed.
+resource "databricks_permissions" "token_usage" {
+  authorization = "tokens"
+  access_control {
+    service_principal_name = databricks_service_principal.demo.application_id
+    permission_level       = "CAN_USE"
+  }
+  access_control {
+    group_name       = "users"
+    permission_level = "CAN_USE"
+  }
+}
+
 # On-behalf-of token, so the playground authenticates as the service
 # principal rather than as whoever ran terraform. Keeps DATABRICKS_TOKEN
 # a machine credential and needs no change to DatabricksSource.
 resource "databricks_obo_token" "demo" {
+  depends_on       = [databricks_permissions.token_usage]
   application_id   = databricks_service_principal.demo.application_id
   comment          = "MigrationRoom playground"
   lifetime_seconds = 90 * 24 * 60 * 60
 }
 
-# ── Grants: read-only on the demo namespace + the samples catalog ─────
+# ── Grants: read-only on the demo namespace ───────────────────────────
+# depends_on is required (not implicit) because `catalog` below is a
+# plain var, not a reference to a databricks_catalog resource — the
+# catalog itself is created by setup_workload.sql, not by Terraform (see
+# the comment above). Without this, Terraform could try to grant on a
+# catalog that doesn't exist yet.
 resource "databricks_grants" "demo_catalog" {
-  catalog = databricks_catalog.demo.name
+  depends_on = [null_resource.setup_workload]
+  catalog    = var.catalog_name
   grant {
     principal  = databricks_service_principal.demo.application_id
     privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT"]
   }
 }
 
-# The workload is built by CTAS out of `samples`, so the principal needs
-# to read it. `samples` is a system catalog and always present.
-resource "databricks_grants" "samples" {
-  catalog = "samples"
-  grant {
-    principal  = databricks_service_principal.demo.application_id
-    privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT"]
-  }
-}
+# No grant on `samples` here — there used to be one, but it's gone.
+# `samples` is a Databricks-managed system catalog; MANAGE on it
+# (needed to change its grants) isn't held
+# by anyone in a normal account, and Databricks documents `samples` as
+# readable without any grant at all — the resource was both unattainable
+# and unnecessary. Nothing in this module's runtime path needs it: only
+# setup_workload.sql references `samples`, and that SQL runs as the
+# provisioning identity (databricks_token.provisioner), not as
+# databricks_service_principal.demo. Neither DatabricksSource
+# (docker/migration-runner/migrationkit/sources/databricks.py) nor any of
+# the six prompts references `samples`.
 
 resource "databricks_permissions" "warehouse_usage" {
   sql_endpoint_id = databricks_sql_endpoint.demo.id
@@ -299,8 +348,10 @@ resource "null_resource" "setup_workload" {
     }
   }
 
-  depends_on = [
-    databricks_schema.demo,
-    databricks_grants.samples,
-  ]
+  # No depends_on needed: the catalog/schema this SQL creates
+  # (`CREATE CATALOG IF NOT EXISTS` / `CREATE SCHEMA IF NOT EXISTS` in
+  # setup_workload.sql) aren't Terraform resources anymore — see the
+  # comment above databricks_sql_endpoint.demo. The warehouse and
+  # provisioner token dependencies are already implicit through the
+  # interpolations in `environment` above.
 }

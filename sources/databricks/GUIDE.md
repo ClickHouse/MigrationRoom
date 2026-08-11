@@ -205,13 +205,18 @@ access, whose token is the one that ends up in `.env`.
    identity you'll run step 7 as. It needs write access: `CREATE
    CATALOG` at the **metastore** (not workspace) level, plus `CREATE
    SCHEMA`, `CREATE TABLE`, and `MODIFY` (covers `ALTER TABLE`,
-   `UPDATE`, `DELETE`) on the catalog from step 1. An existing
-   workspace-admin/account-admin PAT works fine here too.
-4. Grant `USE CATALOG`, `USE SCHEMA`, and `SELECT` on the demo catalog,
-   **and** on the built-in `samples` catalog — the workload
-   `CREATE TABLE ... AS SELECT` copies out of `samples.tpch` — to a
-   **separate, read-only principal**. This is the identity that ends
-   up in `.env` for the playground to actually run as.
+   `UPDATE`, `DELETE`) on the catalog from step 1. It also needs
+   `USE CATALOG`, `USE SCHEMA`, and `SELECT` on the built-in `samples`
+   catalog: step 7's `CREATE TABLE ... AS SELECT` runs **as this
+   principal** and copies out of `samples.tpch`. An existing
+   workspace-admin/account-admin PAT works fine here too, and usually
+   needs no explicit grant on `samples` — account/workspace admins can
+   already read it.
+4. Grant `USE CATALOG`, `USE SCHEMA`, and `SELECT` on the demo catalog
+   (only — it does not need `samples`, since it never runs the CTAS
+   that reads from it) to a **separate, read-only principal**. This is
+   the identity that ends up in `.env` for the playground to actually
+   run as.
 5. *(Optional, only for the S3-staged migration path)* create a Unity
    Catalog **external location** over your staging bucket with
    `WRITE FILES` granted.
@@ -383,17 +388,31 @@ cd ../workspace && terraform destroy   # only if you used the workspace path
 
 Destroy `demo` before `workspace` — the workspace module has no
 `demo` in scope and destroying it first takes everything `demo`
-created (catalog, warehouse, tokens) down with it regardless of order,
+created (warehouse, tokens) down with it regardless of order,
 but destroying in `demo` → `workspace` order lets each module report
 what it removed cleanly.
+
+**`terraform destroy` does not remove the `migration_demo` catalog.**
+The catalog/schema are created by `setup_workload.sql` (`CREATE CATALOG
+IF NOT EXISTS` / `CREATE SCHEMA IF NOT EXISTS`), not by a Terraform
+resource — see `terraform/demo/README.md`'s "What this module creates"
+for why. `terraform destroy` therefore has nothing to target and leaves
+them behind. Drop them by hand for a full teardown:
+
+```sql
+DROP CATALOG migration_demo CASCADE;
+```
+
+Run that as the setup/provisioner identity or an account/workspace
+admin — either has `MANAGE` on the catalog.
 
 - The serverless SQL warehouse's `auto_stop_minutes` defaults to 10
   minutes of idle time before it suspends — an idle warehouse still
   bills, so don't raise this casually.
 - If you enabled S3 staging, the staging bucket has a 7-day lifecycle
-  expiry on staged objects, and both the catalog/schema and the bucket
-  are created with `force_destroy = true` so `terraform destroy` won't
-  wedge on leftover demo tables or objects.
+  expiry on staged objects, and the bucket is created with
+  `force_destroy = true` so `terraform destroy` won't wedge on leftover
+  objects in it.
 
 ---
 
@@ -413,14 +432,6 @@ yet. Set `create_metastore = true` in
 [terraform/workspace/README.md](terraform/workspace/README.md#create_metastore)
 for how to check in advance whether you need it. This is the most
 likely first failure of the "one command" new-environment path.
-
-**`databricks_grants.samples` fails on the first `terraform apply`:**
-The built-in `samples` catalog is often owned by a different metastore
-admin than the identity running Terraform. If the grant fails, either
-apply again after getting the metastore admin to grant ownership (or
-`SELECT`/`USE CATALOG`/`USE SCHEMA` on `samples.tpch` directly) to your
-provisioning principal, or run the grant by hand once and re-apply —
-this is a per-account permission quirk, not a bug in the module.
 
 **`setup_workload.sql` fails on the hand-written `orders` table (`CREATE
 OR REPLACE TABLE migration_demo.tpch.orders`):**
