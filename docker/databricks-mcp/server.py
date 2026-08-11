@@ -23,11 +23,13 @@ Environment:
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 from contextlib import contextmanager
 from typing import Any
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -139,6 +141,37 @@ def _rows(cur) -> list[dict[str, Any]]:
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def _threaded(fn):
+    """Run a blocking tool body in a worker thread.
+
+    FastMCP 1.x dispatches tools with `await fn(...)` if the function is a
+    coroutine and a bare `fn(...)` otherwise — there is no thread offload on
+    the tool path. Every tool here talks Thrift/HTTPS to the warehouse, so as
+    a plain `def` each one froze the entire event loop for its duration: tool
+    calls could not overlap, pings went unanswered, and already-computed
+    responses sat unflushed. Because LibreChat measures its 60 s tool timeout
+    from the moment it *sends* a call, calls queued behind others spent their
+    whole budget waiting and failed with MCP error -32001 — while the server
+    logged nothing wrong, having answered each one in a few seconds.
+
+    Measured on a warm 2X-Small warehouse: four concurrent `describe_table`
+    calls returned at 4.4 s, 9.1 s, 13.4 s and 17.5 s (a perfect staircase),
+    and a ping issued during a call took 4.03 s against 0.00 s when idle.
+
+    `functools.wraps` matters beyond cosmetics: FastMCP builds the tool's
+    JSON schema from `inspect.signature`, which follows `__wrapped__`, and
+    takes the model-facing description from `__doc__`. Both therefore come
+    from the wrapped function, while `iscoroutinefunction` sees the async
+    wrapper and takes the awaiting branch.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any):
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+    return wrapper
+
+
 def _ident(name: str) -> str:
     """Backtick-quote one identifier part, rejecting embedded backticks.
 
@@ -152,6 +185,7 @@ def _ident(name: str) -> str:
 
 
 @mcp.tool()
+@_threaded
 def list_catalogs() -> list[dict[str, Any]]:
     """List Unity Catalog catalogs visible to this principal."""
     with _cursor() as cur:
@@ -164,6 +198,7 @@ def list_catalogs() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@_threaded
 def list_schemas(catalog: str) -> list[dict[str, Any]]:
     """List schemas in `catalog`."""
     with _cursor() as cur:
@@ -178,6 +213,7 @@ def list_schemas(catalog: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@_threaded
 def list_tables(catalog: str, schema: str) -> list[dict[str, Any]]:
     """List tables in `catalog`.`schema` with Delta size metadata.
 
@@ -223,6 +259,7 @@ def list_tables(catalog: str, schema: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@_threaded
 def describe_table(catalog: str, schema: str, table: str) -> dict[str, Any]:
     """Full schema plus Delta detail for one table.
 
@@ -249,6 +286,7 @@ def describe_table(catalog: str, schema: str, table: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+@_threaded
 def run_select_query(sql: str, max_rows: int = 200) -> list[dict[str, Any]]:
     """Run ONE read-only statement (SELECT / WITH / SHOW / DESCRIBE /
     EXPLAIN) and return its rows.

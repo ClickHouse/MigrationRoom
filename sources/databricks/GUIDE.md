@@ -501,6 +501,44 @@ admin — either has `MANAGE` on the catalog.
 
 ## Troubleshooting
 
+**Tool calls fail with `MCP error -32001: Request timed out`, but the
+server log shows nothing wrong.** LibreChat gives each tool call 60 s
+(`timeout: 60000` in `librechat.yaml`) measured from when it *sends* the
+call. FastMCP 1.x runs a **sync** tool function directly on its event
+loop — there is no thread offload on the tool path — so while one tool
+was talking to the warehouse, nothing else on the server progressed: no
+second tool call, no ping, not even the flushing of a response already
+computed. Tool calls serialized, and a call waiting its turn spent its
+whole budget queueing. The give-away is that the server looks healthy
+and answers every call: in one observed case the call the client
+abandoned at 04:49:49 had in fact completed server-side at 04:49:00.
+
+Fixed by wrapping every tool in `@_threaded`
+(`docker/databricks-mcp/server.py`), which hands the blocking body to a
+worker thread. Measured before and after, four concurrent
+`describe_table` calls:
+
+| | before | after |
+|---|---|---|
+| individual latencies | 4.4 / 9.1 / 13.4 / 17.5 s | 5.1 / 4.9 / 4.4 / 4.7 s |
+| wall clock | 17.5 s | 5.1 s |
+| ping during a call | 4.03 s | 0.01 s |
+
+`tests/test_mcp_tools_nonblocking.py` guards the invariant, so a tool
+added later as a bare `def` fails the suite rather than quietly
+reintroducing the stall.
+
+**If you still see timeouts**, the remaining cost is the warehouse
+itself, not the server. A serverless warehouse that has auto-stopped
+pays a cold start: the first call after idle measured **22.8 s** against
+**4.4 s** warm. Each call also opens its own connection (~2 s of TLS,
+auth and session setup) and `describe_table` runs three statements
+(`DESCRIBE TABLE EXTENDED`, `DESCRIBE DETAIL`, `DESCRIBE HISTORY`).
+`list_tables` additionally issues one `DESCRIBE DETAIL` per table. If a
+cold start plus a wide `list_tables` still crowds 60 s, raise
+`timeout` for `databricks-source` in `librechat/librechat.yaml`, or keep
+the warehouse warm by raising its auto-stop window.
+
 **`databricks-mcp` reports `healthy`, but the agent has no Databricks
 tools.** LibreChat's log shows a 421 and a circuit breaker:
 ```
