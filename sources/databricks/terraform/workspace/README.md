@@ -36,18 +36,23 @@ the application (client) ID and the account UUID (both visible in the
 console under your profile).
 
 **Why account admin specifically, not just workspace admin:** the chained
-`demo` apply creates a Unity Catalog catalog
-(`databricks_catalog.demo`), and `CREATE CATALOG` is a **metastore-level**
-privilege, not a workspace-level one — `provisioner_admin` below only
-grants workspace ADMIN. Nothing in this module grants a metastore
-privilege explicitly, because doing so would need the metastore ID and
-would be redundant if the assumption below already holds. The assumption
-is: an account admin has implicit metastore-admin capability, and
-metastore admins can create catalogs, so authenticating as an account
+`demo` apply's workload-seeding step creates the Unity Catalog catalog via
+plain SQL (`CREATE CATALOG IF NOT EXISTS`, run by `setup_workload.sql` —
+see `../demo/README.md`; there is no `databricks_catalog` Terraform
+resource in `demo` anymore), and `CREATE CATALOG` is a **metastore-level**
+privilege either way, not a workspace-level one — `provisioner_admin`
+below only grants workspace ADMIN. Nothing in this module grants a
+metastore privilege explicitly, because doing so would need the metastore
+ID and would be redundant if the assumption below already holds. The
+assumption is: an account admin has implicit metastore-admin capability,
+and metastore admins can create catalogs, so authenticating as an account
 admin — which you must do anyway for this module's own provider block —
 is what makes the later `CREATE CATALOG` succeed. A service principal
 scoped to something narrower than account admin will authenticate fine
 here and then fail, confusingly, when `demo` tries to create its catalog.
+**Confirmed live** (see "Honesty about what's been verified" below): the
+chained `demo` apply's `CREATE CATALOG` succeeded using the account-admin
+identity's credentials, on the first attempt.
 
 ## Usage
 
@@ -108,16 +113,33 @@ API. Neither is implemented here.
 
 ## Honesty about what's been verified
 
-`terraform apply` has **not** been run against a real Databricks account
-as part of building this module — there were no Databricks credentials
-available in the environment that wrote it. What was verified is that the
-configuration is syntactically and structurally valid: `terraform fmt
--check`, `terraform init -backend=false`, and `terraform validate` all
-pass against provider `databricks/databricks` v1.124.0. Provider-side
-behavior (serverless workspace creation, the permission assignment, the
-optional metastore path) has not been exercised end-to-end.
+`terraform apply` **has** been run against a real Databricks account, via
+`make databricks-provision-workspace` — and this module is the part of
+the whole feature that applied cleanly on the first attempt, no code
+changes needed. `databricks_mws_workspaces.demo` created a serverless
+workspace in roughly 47 seconds; `databricks_mws_permission_assignment.provisioner_admin`
+granted the provisioning service principal workspace ADMIN; and the
+chained hand-off into `../demo` worked end-to-end — outputs captured,
+`workspace.auto.tfvars.json` written by the merge script, and the `demo`
+apply picked it up with no manual copy-pasting. `terraform fmt -check`,
+`terraform init -backend=false`, and `terraform validate` all also pass
+against provider `databricks/databricks` v1.124.0, as before.
+
+What's still unexercised: the run took the `create_metastore = false`
+path — the account already had a Unity Catalog metastore in the region —
+so the `databricks_metastore` / `databricks_metastore_assignment` branch
+(`create_metastore = true`) remains untested against a live account.
+`terraform destroy` has **not** been run for this module either. And this
+is one account, one region (`us-east-1`), one observation — not a
+guarantee for other accounts, regions, or (per "Cloud support" above)
+other clouds.
 
 The account-admin → implicit-metastore-admin → `CREATE CATALOG` chain
-described above under "The one manual prerequisite" is **documented, not
-verified against a live account** — the same lack-of-credentials caveat
-applies to it as to everything else in this list.
+described above under "The one manual prerequisite" **is now confirmed**,
+not just documented: the chained `demo` apply's `CREATE CATALOG IF NOT
+EXISTS` (run by `setup_workload.sql` against the workspace, using
+credentials derived from this module's account-admin identity) succeeded
+on the first attempt. The assumption held on this account; it hasn't been
+tested against a service principal scoped to something narrower than
+account admin, since that's precisely the configuration this README
+recommends against.
