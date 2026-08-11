@@ -56,6 +56,9 @@ make up
 docker compose logs clickhouse-oss -f   # watch seed progress
 ```
 
+`make up` activates the `clickhouse-oss` Compose profile for you; a bare
+`docker compose up -d` without `COMPOSE_PROFILES` set won't start ClickHouse OSS.
+
 If you want the TPC-H workload too, run it after `make up` is healthy:
 
 ```bash

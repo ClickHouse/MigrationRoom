@@ -13,8 +13,10 @@
 # the librechat-init container.
 #
 # Optional sources (gated by Compose profile -> only included when profile is active):
-#   snowflake-source -> profile "snowflake"
-#   bigquery-source  -> profile "bigquery"
+#   postgres-source    -> profile "postgres"
+#   clickhouse-oss-source -> profile "clickhouse-oss"
+#   snowflake-source   -> profile "snowflake"
+#   bigquery-source    -> profile "bigquery"
 #   databricks-source -> profile "databricks"
 # All other MCPs are unconditional.
 
@@ -56,6 +58,22 @@ drop_mcp() {
         yq -i 'del(.mcpServers[env(MCP_KEY)]) | .mcpSettings.allowedDomains |= map(select(. != env(HOST)))' \
         "$RUNTIME_FILE"
 }
+
+# postgres-source: MCP key "postgres-source", host is postgres-mcp
+if is_active postgres; then
+    kept+=("postgres-source")
+else
+    drop_mcp "postgres-source" "postgres-mcp"
+    removed+=("postgres-source")
+fi
+
+# clickhouse-oss-source: MCP key "clickhouse-oss-source", host is clickhouse-oss-mcp
+if is_active clickhouse-oss; then
+    kept+=("clickhouse-oss-source")
+else
+    drop_mcp "clickhouse-oss-source" "clickhouse-oss-mcp"
+    removed+=("clickhouse-oss-source")
+fi
 
 # snowflake-source: MCP key "snowflake-source", host points at the shim
 if is_active snowflake; then

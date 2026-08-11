@@ -93,6 +93,13 @@ The components fall into five groups:
 
 Snowflake, BigQuery, and Databricks don't have bundled databases — the source MCPs connect to partner-provided cloud accounts.
 
+All five sources (bundled and cloud) are Compose-profile-gated, one
+profile per source (`postgres`, `clickhouse-oss`, `snowflake`,
+`bigquery`, `databricks`) — nothing starts unconditionally. `make up`
+activates `postgres` and `clickhouse-oss` by default (matching the
+historical default experience); `make up-<cloud-source>` activates only
+that one cloud source's profile.
+
 ---
 
 ## `migration-runner` — Python sandbox + run state
@@ -332,13 +339,19 @@ Optional but recommended:
 
 ### 2a — Local container source
 
-Add two services to `docker-compose.yml`: the database container and an MCP server.
+Add two services to `docker-compose.yml`: the database container and an MCP server. Both the bundled sources (`postgres`, `clickhouse-oss`) and the cloud sources are Compose-profile-gated — a new local-container source should be too, so a partner migrating from a different source never pays the cost of a container (and, worse, a data-seeding job) it will never use.
 
 ```yaml
 services:
 
   # ── Source Database ──────────────────────────────────────────
+  # Profile-gated: only starts when the matching profile is active
+  # (`make up-<source-name>`, or `docker compose --profile <source-name>
+  # up -d`). Follow this even for a source you expect to be "the new
+  # default" — decide defaults in the Makefile, not by leaving the
+  # service unconditional.
   <source-name>:
+    profiles: ["<source-name>"]
     image: <database-image>
     ports:
       - "<host-port>:<container-port>"
@@ -355,7 +368,9 @@ services:
 
   # ── Source MCP Server ────────────────────────────────────────
   # supergateway wraps a stdio MCP server as an SSE endpoint for LibreChat.
+  # Same profile as the database service above — the two are gated together.
   <source-name>-mcp:
+    profiles: ["<source-name>"]
     image: node:20-alpine
     command: >
       sh -c "npx -y supergateway --stdio 'npx -y <mcp-package>' --port 8000"
@@ -382,7 +397,7 @@ volumes:
 > Use the next available port (e.g. `8009`) for a new source to avoid
 > conflicts.
 
-Also add the new MCP service to LibreChat's `depends_on`:
+Also add the new MCP service to LibreChat's `depends_on` — since it's profile-gated, mark it `required: false` (Compose otherwise still requires the service to exist even when its profile is inactive):
 
 ```yaml
   librechat:
@@ -390,12 +405,17 @@ Also add the new MCP service to LibreChat's `depends_on`:
       mongodb:
         condition: service_healthy
       postgres-mcp:
-        condition: service_started
+        condition: service_healthy
+        required: false
       clickhouse-oss-mcp:
-        condition: service_started
+        condition: service_healthy
+        required: false
       <source-name>-mcp:          # ← add this
-        condition: service_started
+        condition: service_healthy
+        required: false
 ```
+
+Then add the same gate to `scripts/build-librechat-runtime.sh` (a `drop_mcp <mcp_key> <host>` call keyed off the new profile — follow the existing `postgres-source` / `snowflake-source` entries) and to `OPTIONAL_PROFILE` in `librechat-init`'s agent loop in `docker-compose.yml`, keyed by the source's `src_id`. Skipping either leaves LibreChat declaring an MCP server whose container never starts, which produces an endless reconnect loop in the LibreChat log.
 
 ### 2b — Cloud service source
 
@@ -680,6 +700,7 @@ make up                    # start the playground (Postgres + ClickHouse OSS sou
 make up-snowflake          # also start the Snowflake source MCP + Gemini shim
 make up-bigquery           # also start the BigQuery source MCP
 make up-databricks         # also start the Databricks source MCP (databricks-mcp)
+make up-all                # start every source at once (dev/testing only — not the partner-facing default)
 make snowflake-setup       # set up MIGRATION_DEMO.RETAIL workload in existing Snowflake (Path A)
 make snowflake-provision   # provision a fresh Snowflake demo env with Terraform (Path B)
 make databricks-setup      # seed migration_demo.tpch in an existing Databricks workspace (manual entry path)
@@ -698,7 +719,9 @@ make logs                  # tail all service logs
 make diagram               # regenerate docs/architecture.png from docs/architecture.mmd
 ```
 
-`up` / `up-snowflake` / `up-bigquery` / `up-databricks` each run [`scripts/check-env.sh`](../scripts/check-env.sh) first, which hard-fails with the missing variable names if `.env` is absent or missing `JWT_SECRET` / `JWT_REFRESH_SECRET` / `CREDS_KEY` / `CREDS_IV`.
+`up` / `up-snowflake` / `up-bigquery` / `up-databricks` / `up-all` each run [`scripts/check-env.sh`](../scripts/check-env.sh) first, which hard-fails with the missing variable names if `.env` is absent or missing `JWT_SECRET` / `JWT_REFRESH_SECRET` / `CREDS_KEY` / `CREDS_IV`.
+
+`down` and `reset` always tear down (and, for `reset`, destroy volumes for) every profile — `postgres`, `clickhouse-oss`, `snowflake`, `bigquery`, `databricks` — regardless of which one is currently active, via the Makefile's `ALL_PROFILES` variable. That's deliberate: a profile-gated service that `down`/`reset` didn't know about would be left running (or its volume never destroyed).
 
 ### Optional: LLM tracing with Langfuse
 
@@ -740,10 +763,12 @@ Before opening a PR for a new source, verify:
 - [ ] `sources/<source-name>/queries/sample_olap_queries.sql` — all queries run against the source
 - [ ] `sources/<source-name>/GUIDE.md` — all six dashboard steps run end-to-end against the new source
 - [ ] `librechat/sources/<source-name>-instructions.md` — opens with a "Schema Discovery — Don't Assume Anything" section that mandates the source MCP; rules are generic (no hardcoded table/column names)
-- [ ] `docker-compose.yml` — `make up` succeeds cleanly; MCP service starts and is reachable; the source is added to the `agents` array in `librechat-init` so its agent is auto-created
+- [ ] `docker-compose.yml` — the new source (database and/or MCP) carries `profiles: ["<source-name>"]`; its `depends_on` entry under `librechat` is `required: false`; `make up-<source-name>` succeeds cleanly and starts only that source's services; the source is added to the `agents` array (and, if optional by default, to `OPTIONAL_PROFILE`) in `librechat-init` so its agent is auto-created only when active
 - [ ] `librechat/librechat.yaml` — new MCP entry under `mcpServers`; hostname added to `mcpSettings.allowedDomains`; `make setup` injects the per-source instructions without errors
+- [ ] `scripts/build-librechat-runtime.sh` — a `drop_mcp` gate added for the new source's profile, so an inactive source's MCP entry is stripped from `librechat.runtime.yaml` instead of causing an endless reconnect loop
 - [ ] `migrationkit/sources/<source>.py` (if a new `Source` subclass is needed) — implements `count_rows`, `iter_batches`, `execute_and_count`, `close`, plus optional `unload_to_s3` / `unload_to_gcs` for staging paths; exported from `migrationkit/__init__.py`
 - [ ] `make reset-agent` materialises the new agent; the dashboard's Source dropdown lists the new source
 - [ ] README's migration-sources table updated
-- [ ] *(Local container sources only)* `sources/<source-name>/docker/` — database seeds correctly on `docker compose up`
-- [ ] *(Cloud sources only)* `.env.example` — all required credential variables documented with placeholder values; `make up-<source>` profile-gating is wired through `docker-compose.yml`
+- [ ] *(Local container sources only)* `sources/<source-name>/docker/` — database seeds correctly on `make up-<source-name>` (or `docker compose --profile <source-name> up -d`)
+- [ ] *(Cloud sources only)* `.env.example` — all required credential variables documented with placeholder values
+- [ ] `Makefile` — if this source should be part of the default `make up` experience (like `postgres`/`clickhouse-oss`), add its profile to the `up` target's `COMPOSE_PROFILES`; otherwise give it its own `make up-<source-name>` target that activates only its profile
