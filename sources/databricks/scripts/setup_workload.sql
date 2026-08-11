@@ -90,7 +90,7 @@ SELECT * FROM samples.tpch.lineitem WHERE l_orderkey <= 6000000;
 -- Forces a decision: map to ClickHouse JSON, or extract hot keys into
 -- typed columns? VARIANT is native from DBSQL 2024.35 / DBR 15.3.
 
--- @requires: VARIANT requires DBSQL 2024.35+ or DBR 15.3+. Upgrade the SQL warehouse channel to Current, or use a newer runtime.
+-- @requires: VARIANT column add failed. Don't jump straight to a runtime upgrade: if DBSQL is already 2024.35+ / DBR already 15.3+, this is more likely the same table-feature-enablement gap as TIMESTAMP_NTZ below — Databricks docs say VARIANT support "is not enabled automatically" on an existing table; remedy is ALTER TABLE table_name SET TBLPROPERTIES ('delta.feature.variantType' = 'supported'). orders is freshly (re)created just above so this shouldn't apply here, but check before upgrading anything.
 ALTER TABLE migration_demo.tpch.orders ADD COLUMN o_metadata VARIANT;
 
 UPDATE migration_demo.tpch.orders
@@ -142,8 +142,21 @@ SET l_shipping_events = array(
 
 -- ── Augmentation 3: TIMESTAMP vs TIMESTAMP_NTZ on lineitem ────────────
 -- Forces UTC normalisation and a DateTime64 precision choice.
+--
+-- lineitem is a CTAS (`CREATE OR REPLACE TABLE ... AS SELECT * FROM
+-- samples.tpch.lineitem`), unlike orders above (explicit column DDL), so
+-- it inherits only samples.tpch.lineitem's Delta features — appendOnly,
+-- deletionVectors, invariants — not the fuller feature set a freshly
+-- created table gets. Databricks' docs state plainly that TIMESTAMP_NTZ
+-- support "is not enabled automatically" when a column of that type is
+-- added to an existing table, so it must be turned on explicitly first.
+-- Doing so upgrades the table protocol (one-way).
 
--- @requires: TIMESTAMP_NTZ requires DBSQL 2023.35+ or DBR 13.3+.
+-- @requires: Could not enable the timestampNtz table feature on lineitem. Likely cause: this workspace's Delta/DBR version is too old to support the timestampNtz table feature at all (not just needing it switched on) — compare against its version floor, DBSQL 2023.35+ / DBR 13.3+.
+ALTER TABLE migration_demo.tpch.lineitem
+SET TBLPROPERTIES ('delta.feature.timestampNtz' = 'supported');
+
+-- @requires: TIMESTAMP_NTZ column add failed even though the statement above just enabled the timestampNtz table feature. The workspace supports TIMESTAMP_NTZ (DBSQL 2023.35+ / DBR 13.3+) — this table simply hadn't had the feature turned on yet. Re-check the enablement statement's outcome; don't upgrade the runtime, that isn't the problem.
 ALTER TABLE migration_demo.tpch.lineitem
 ADD COLUMNS (
     l_committed_at     TIMESTAMP,
