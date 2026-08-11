@@ -186,6 +186,11 @@ readable by ClickHouse; the staged unload writes to `s3://` directly.
 
   So `if row["some_array"]:` is safe, and you need neither `.tolist()` nor
   dict→tuple rewriting nor `json.dumps`.
+
+  One exception: a `MAP` **nested inside** a `STRUCT` is not converted, because
+  at that depth it is indistinguishable from a genuine array of pairs. If
+  `describe_table` shows a map inside a struct, write a `transform=` for that
+  column and say so in chat.
 - **Never delete a generated column from the row.** `ALIAS` and
   `MATERIALIZED` target columns are excluded from the insert automatically,
   and ClickHouse computes them itself. Writing `del row["o_orderyear"]` is
