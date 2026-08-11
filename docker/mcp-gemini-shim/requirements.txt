@@ -1,3 +1,9 @@
-mcp[cli]>=1.0
+# This shim doesn't use FastMCP, but it does use the lowlevel mcp.server.Server
+# class's @server.list_tools()/@server.call_tool() decorator API, which mcp 2.0
+# also removed (the 2.0 Server has no list_tools/call_tool methods at all —
+# confirmed via AttributeError). Migrating to the 2.x API is a separate piece
+# of work; keep this bound until that happens so a routine `pip install -U`
+# doesn't break the build.
+mcp[cli]>=1.0,<2
 starlette>=0.32
 uvicorn>=0.27

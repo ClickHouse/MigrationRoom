@@ -1,4 +1,8 @@
-mcp[cli]>=1.0
+# mcp 2.0 removed mcp.server.fastmcp (FastMCP) in favor of MCPServer, which
+# has no .settings attribute — this server.py uses FastMCP 1.x semantics.
+# Migrating to the 2.x API is a separate piece of work; keep this bound
+# until that happens so a routine `pip install -U` doesn't break the build.
+mcp[cli]>=1.0,<2
 snowflake-connector-python>=3.7
 psycopg2-binary>=2.9
 clickhouse-connect>=0.7
