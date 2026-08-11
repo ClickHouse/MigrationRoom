@@ -68,6 +68,33 @@ machine that will run `terraform`/`make` actually has:
   `/Applications/Python 3.x/Install Certificates.command` has never
   been run.
 
+### Clone the repo and run `make setup`
+
+```bash
+git clone https://github.com/sishuoyang/MigrationRoom
+cd MigrationRoom
+make setup
+```
+
+Edit `.env` — add your LLM API key and ClickHouse Cloud credentials:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...        # or OPENAI_API_KEY=sk-...
+CLICKHOUSE_CLOUD_HOST=<your-service>.clickhouse.cloud
+CLICKHOUSE_CLOUD_USER=default
+CLICKHOUSE_CLOUD_PASSWORD=<your-password>
+```
+
+**Do this before any of the three entry points below.** Each one ends
+with a `terraform output -raw env_block >> ../../../../.env` step, and
+`>>` **creates** `.env` if it doesn't exist. If `make setup` hasn't run
+yet, that append becomes the entire file — no `JWT_SECRET`,
+`JWT_REFRESH_SECRET`, `CREDS_KEY`, or `CREDS_IV` — and LibreChat exits 1
+at startup with:
+```
+error: There was an uncaught error: JwtStrategy requires a secret or key
+```
+
 Pick the entry point that matches what you already have. All three end
 with the same `migration_demo.tpch` workload sitting in a Databricks
 workspace and the four `DATABRICKS_*` variables in `.env`.
@@ -167,6 +194,12 @@ prints where to capture the `.env` block:
 cd sources/databricks/terraform/demo && terraform output -raw env_block >> ../../../../.env
 ```
 
+> **`>>` creates `.env` if it doesn't exist.** Make sure you already
+> ran `make setup` (see "Clone the repo and run `make setup`" above) —
+> otherwise `.env` ends up containing only this Terraform output, and
+> LibreChat exits 1 at startup with `error: There was an uncaught
+> error: JwtStrategy requires a secret or key`.
+
 If the region has no Unity Catalog metastore yet (rare, but possible
 for a brand-new account), the chained `demo` apply fails outright
 because there's nothing for the new workspace to attach to. Set
@@ -214,6 +247,12 @@ make databricks-provision
 ```bash
 cd sources/databricks/terraform/demo && terraform output -raw env_block >> ../../../../.env
 ```
+
+> **`>>` creates `.env` if it doesn't exist.** Make sure you already
+> ran `make setup` (see "Clone the repo and run `make setup`" above) —
+> otherwise `.env` ends up containing only this Terraform output, and
+> LibreChat exits 1 at startup with `error: There was an uncaught
+> error: JwtStrategy requires a secret or key`.
 
 See [terraform/demo/README.md](terraform/demo/README.md) — in
 particular the **re-apply caveat** if you set `enable_s3_staging =
@@ -293,6 +332,10 @@ make up-databricks
 including `databricks-mcp`. Default `make up` skips it — like
 Snowflake and BigQuery, the Databricks MCP is profile-gated because it
 needs account credentials in `.env`.
+
+`make up-databricks` first preflights `.env` (`scripts/check-env.sh`) and
+fails fast, naming the missing variables, if it's absent or missing any
+of the four secrets LibreChat needs to boot.
 
 Check `docker compose ps` — `databricks-mcp` should show `healthy`
 alongside the rest of the stack. Its healthcheck only probes that the

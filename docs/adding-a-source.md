@@ -698,6 +698,8 @@ make logs                  # tail all service logs
 make diagram               # regenerate docs/architecture.png from docs/architecture.mmd
 ```
 
+`up` / `up-snowflake` / `up-bigquery` / `up-databricks` each run [`scripts/check-env.sh`](../scripts/check-env.sh) first, which hard-fails with the missing variable names if `.env` is absent or missing `JWT_SECRET` / `JWT_REFRESH_SECRET` / `CREDS_KEY` / `CREDS_IV`.
+
 ### Optional: LLM tracing with Langfuse
 
 LibreChat has native Langfuse support — add three lines to `.env` to get token usage, latency, and full conversation traces for every AI interaction.

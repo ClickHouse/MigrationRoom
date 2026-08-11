@@ -31,9 +31,32 @@ don't need to paste them by hand.
 
 ## Phase 0 — BigQuery Setup (~10 min)
 
-Pick one path. Both end with the same `migration_demo` dataset sitting
-in your BigQuery project, with the TPC-H workload + augmentations
-already applied.
+```bash
+git clone https://github.com/sishuoyang/MigrationRoom
+cd MigrationRoom
+make setup
+```
+
+Edit `.env` — add your LLM API key and ClickHouse Cloud credentials:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...        # or OPENAI_API_KEY=sk-...
+CLICKHOUSE_CLOUD_HOST=<your-service>.clickhouse.cloud
+CLICKHOUSE_CLOUD_USER=default
+CLICKHOUSE_CLOUD_PASSWORD=<your-password>
+```
+
+**Do this before either path below.** Path B ends with a
+`terraform output ... >> ../../../.env` step, and `>>` **creates**
+`.env` if it doesn't exist. If `make setup` hasn't run yet, that
+append becomes the entire file — no `JWT_SECRET`, `JWT_REFRESH_SECRET`,
+`CREDS_KEY`, or `CREDS_IV` — and LibreChat exits 1 at startup with
+`error: There was an uncaught error: JwtStrategy requires a secret or
+key`.
+
+Pick one path below for the BigQuery-specific setup. Both end with the
+same `migration_demo` dataset sitting in your BigQuery project, with
+the TPC-H workload + augmentations already applied.
 
 ### Prerequisites — `gcloud` CLI
 
@@ -120,6 +143,11 @@ terraform output -no-color -raw env_block 2>/dev/null \
   | grep -E '^(#|[A-Z_]+=|$)' >> ../../../.env
 ```
 
+> **`>>` creates `.env` if it doesn't exist.** Make sure you already
+> ran `make setup` (above) — otherwise `.env` ends up containing only
+> this Terraform output, and LibreChat exits 1 at startup with `error:
+> There was an uncaught error: JwtStrategy requires a secret or key`.
+
 Provisions a BigQuery dataset, a dedicated service account with
 least-privilege roles, writes the SA key to `./secrets/gcp-key.json`,
 and optionally creates a GCS staging bucket. Then run `make tpch-data`
@@ -143,6 +171,10 @@ make up-bigquery
 `make up-bigquery` runs `make up` plus the profile-gated
 `bigquery-source` MCP container. Default `make up` skips BigQuery
 because the upstream toolbox crashes without valid credentials.
+
+`make up-bigquery` first preflights `.env` (`scripts/check-env.sh`)
+and fails fast, naming the missing variables, if it's absent or
+missing any of the four secrets LibreChat needs to boot.
 
 Open **<https://localhost/dashboard/>** (accept the self-signed cert)
 and sign in (`admin@playground.local` / `playground`). You'll land on

@@ -31,8 +31,31 @@ don't need to paste them by hand.
 
 ## Phase 0 — Snowflake Setup (~5 min)
 
-Pick one path. Both end with the same `MIGRATION_DEMO.RETAIL` workload
-sitting in your Snowflake account.
+```bash
+git clone https://github.com/sishuoyang/MigrationRoom
+cd MigrationRoom
+make setup
+```
+
+Edit `.env` — add your LLM API key and ClickHouse Cloud credentials:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...        # or OPENAI_API_KEY=sk-...
+CLICKHOUSE_CLOUD_HOST=<your-service>.clickhouse.cloud
+CLICKHOUSE_CLOUD_USER=default
+CLICKHOUSE_CLOUD_PASSWORD=<your-password>
+```
+
+**Do this before either path below.** If you instead paste Path B's
+Terraform output into `.env` with `>>` before `make setup` has run,
+`>>` **creates** `.env` if it doesn't exist — so `.env` ends up
+containing only that Terraform output, and LibreChat exits 1 at
+startup with `error: There was an uncaught error: JwtStrategy requires
+a secret or key`.
+
+Pick one path below for the Snowflake-specific setup. Both end with
+the same `MIGRATION_DEMO.RETAIL` workload sitting in your Snowflake
+account.
 
 ### Path A — Existing Snowflake account
 
@@ -65,6 +88,12 @@ Provisions a dedicated warehouse, role, and user, then runs the same
 workload setup. `terraform output -raw env_block` prints the `.env`
 block to paste back into the project root.
 
+> If you append it with `terraform output -raw env_block >> .env`,
+> make sure `make setup` (above) has already run — `>>` creates `.env`
+> if it doesn't exist, and a `.env` containing only this block makes
+> LibreChat exit 1 at startup with `error: There was an uncaught error:
+> JwtStrategy requires a secret or key`.
+
 ---
 
 ## Phase 1 — Launch the playground (~5 min)
@@ -76,6 +105,10 @@ make up-snowflake
 `make up-snowflake` runs `make up` plus the profile-gated
 `snowflake-source` MCP container. Default `make up` skips Snowflake
 because the upstream MCP crashes without valid credentials.
+
+`make up-snowflake` first preflights `.env` (`scripts/check-env.sh`)
+and fails fast, naming the missing variables, if it's absent or
+missing any of the four secrets LibreChat needs to boot.
 
 Open **<https://localhost/dashboard/>** (accept the self-signed cert)
 and sign in (`admin@playground.local` / `playground`). You'll land on

@@ -22,6 +22,7 @@ setup:
 
 up: export COMPOSE_PROFILES :=
 up:
+	@bash scripts/check-env.sh
 	@echo "Regenerating librechat.runtime.yaml for active profiles: <none>"
 	@bash scripts/build-librechat-runtime.sh
 	@echo "Pulling images..."
@@ -40,6 +41,7 @@ up:
 
 up-snowflake: export COMPOSE_PROFILES := snowflake
 up-snowflake:
+	@bash scripts/check-env.sh
 	@echo "Regenerating librechat.runtime.yaml for active profiles: snowflake"
 	@bash scripts/build-librechat-runtime.sh
 	@echo "Pulling images..."
@@ -69,6 +71,7 @@ snowflake-provision:
 
 up-bigquery: export COMPOSE_PROFILES := bigquery
 up-bigquery:
+	@bash scripts/check-env.sh
 	@echo "Regenerating librechat.runtime.yaml for active profiles: bigquery"
 	@bash scripts/build-librechat-runtime.sh
 	@echo "Pulling images..."
@@ -90,6 +93,7 @@ bigquery-provision:
 
 up-databricks: export COMPOSE_PROFILES := databricks
 up-databricks:
+	@bash scripts/check-env.sh
 	@echo "Regenerating librechat.runtime.yaml for active profiles: databricks"
 	@bash scripts/build-librechat-runtime.sh
 	@echo "Pulling images..."
