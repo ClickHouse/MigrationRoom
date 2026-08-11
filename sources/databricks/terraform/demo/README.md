@@ -192,11 +192,16 @@ through the external location fail with a network error.
 
 ## Honesty about what's been verified
 
-`terraform apply` for this module has **not** been run against a real
-workspace as part of building it — there were no Databricks or AWS
-credentials available in the environment that wrote it. What was verified
-is that the configuration is syntactically and structurally valid:
-`terraform fmt -check`, `terraform init -backend=false`, and
-`terraform validate` all pass. Provider-side behavior (grants, the OBO
-token, the storage-credential/IAM dance, serverless warehouse creation)
-has not been exercised end-to-end.
+This module has now been applied against a real Databricks account (via
+the chained `make databricks-provision-workspace` path) and reaches the
+workload-seeding step; three defects it surfaced there are fixed in
+`9777de2` and one more in `883ea3c`. A fifth error encountered on that
+run was a local Python TLS trust-store problem, not a defect in this
+module. For the verbatim errors, root causes, and fixes — including the
+one that needs an action on your own machine — see
+[`../../GUIDE.md`](../../GUIDE.md#troubleshooting)'s Troubleshooting
+section and its "Honesty about what's been verified" section for exactly
+how far the live run got (`setup_workload.sql` statement 15 of 26).
+`terraform fmt -check`, `terraform init -backend=false`, and `terraform
+validate` all still pass, but that was never the open question for this
+module's live behavior.

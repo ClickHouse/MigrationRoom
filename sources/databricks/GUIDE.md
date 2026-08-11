@@ -40,6 +40,34 @@ don't need to paste them by hand.
 
 ## Phase 0 — Databricks setup (~5–20 min depending on path, estimate)
 
+### Local prerequisites
+
+Before picking one of the three entry points below, make sure the
+machine that will run `terraform`/`make` actually has:
+
+- **`terraform` >= 1.5, `python3`, and `make`.**
+- **A working Python TLS trust store.** Only the workload-seeding step
+  (`setup_workload.py` — run directly by `make databricks-setup`, or
+  indirectly by `null_resource.setup_workload` inside the `demo`
+  module) goes over HTTPS from Python. Terraform itself, including the
+  Databricks provider, uses the OS trust store (the macOS Keychain, via
+  Go) — so **a `terraform apply` that completes successfully proves
+  nothing about whether Python can verify HTTPS certificates.** It's
+  entirely possible for `terraform apply` to sail through every other
+  resource and only then hang, silently, for 15 minutes on the last
+  step. Check now:
+  ```bash
+  python3 -c "import ssl; print(ssl.create_default_context().cert_store_stats())"
+  ```
+  If `x509_ca` is `0`, Python has no trusted root certificates at all —
+  it can't verify *any* HTTPS site, not just Databricks — and the
+  workload step will hang for exactly 15 minutes before failing with a
+  TLS error (see the Troubleshooting entry below for the fix, and why
+  it's a local Python problem rather than anything Databricks-side).
+  This is common on a python.org "framework build" on macOS where
+  `/Applications/Python 3.x/Install Certificates.command` has never
+  been run.
+
 Pick the entry point that matches what you already have. All three end
 with the same `migration_demo.tpch` workload sitting in a Databricks
 workspace and the four `DATABRICKS_*` variables in `.env`.
@@ -430,6 +458,136 @@ admin — either has `MANAGE` on the catalog.
 
 ## Troubleshooting
 
+**The workload step hangs for 15 minutes, then fails with a TLS
+certificate error:**
+```
+ThriftBackend.attempt_request: Exception: Retry request would exceed Retry policy max retry
+duration of 900.0 seconds
+...
+databricks.sql.exc.RequestError: Error during request to server.
+HTTP request failed after retries: HTTPSConnectionPool(host='dbc-....cloud.databricks.com',
+port=443): Max retries exceeded with url: /telemetry-unauth (Caused by
+SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify
+failed: self-signed certificate in certificate chain (_ssl.c:1082)')))
+```
+This is **not** a Databricks problem and **not** a corporate proxy —
+Databricks' certificate chain (leaf → `DigiCert Global G2 TLS RSA
+SHA256 2020 CA1` → `DigiCert Global Root G2`, self-signed like all
+roots) is legitimate. The cause is a **local Python trust store with no
+certificates in it** — confirmed live via
+`ssl.create_default_context().cert_store_stats()` returning
+`{'x509': 0, 'crl': 0, 'x509_ca': 0}`, meaning that Python couldn't
+verify any HTTPS site, including pypi.org. Zero SQL statements ran; the
+failure is inside `dbsql.connect()`, and the 900 seconds is the
+connector's retry policy retrying a TLS handshake that will never
+succeed. The specific case seen: a python.org "framework build" on
+macOS where `Install Certificates.command` had never been run —
+`ssl.get_default_verify_paths().openssl_cafile` pointed at
+`/Library/Frameworks/Python.framework/Versions/3.x/etc/openssl/cert.pem`,
+which didn't exist, while certifi's bundle (150 CAs) was present on
+disk but never linked in. Terraform's own Databricks provider kept
+working throughout — Go uses the macOS Keychain, Python uses its own
+store — which is the tell: if `terraform apply` gets all the way to the
+workload step and only the Python script hangs on TLS, this is it. See
+"Local prerequisites" at the top of Phase 0 for the check; two fixes,
+both verified against the live workspace:
+```bash
+# Preferred — populates the trust store permanently
+/Applications/Python\ 3.14/Install\ Certificates.command   # adjust the version
+
+# Or, per-shell, without touching the Python install
+export SSL_CERT_FILE="$(python3 -m certifi)"
+```
+The `SSL_CERT_FILE` route only lasts for the current shell — a new
+terminal loses it and the 15-minute hang comes back.
+
+**`null_resource.setup_workload` prints nothing at all while it runs —
+is it stuck?** No — this is expected, not a hang (assuming your Python
+trust store is fine; see above if it's been running for exactly 15
+minutes). `DATABRICKS_TOKEN` is passed through the provisioner's
+`environment` block as a sensitive value (`databricks_token`'s
+`token_value` output), and Terraform suppresses **all** output from a
+`local-exec` provisioner when any part of its `environment` map is
+sensitive — not just the token itself. Silence for the duration of the
+script (seconds, if your trust store is fine) is normal; wait for
+`terraform apply` to report the resource as created.
+
+**`cannot create catalog: Metastore storage root URL does not exist`:**
+```
+Error: cannot create catalog: Metastore storage root URL does not exist. Default Storage is
+enabled in your account. You can use the UI to create a new catalog using Default Storage, or
+please provide a storage location for the catalog
+  with databricks_catalog.demo
+```
+Serverless workspaces use Default Storage, so the metastore has no
+storage root, and `databricks_catalog`'s only location argument
+(`storage_root`) has nothing to point at. Fixed in `9777de2` — `git
+pull` if you're on an older checkout: the `databricks_catalog` /
+`databricks_schema` resources were removed, and `setup_workload.sql`
+creates the catalog/schema via plain SQL instead, which needs no
+location on a Default Storage metastore.
+
+**`cannot create obo token: User ... does not have permission to use
+tokens`:**
+```
+Error: cannot create obo token: User <uuid> does not have permission to use tokens.
+  with databricks_obo_token.demo
+```
+A newly created service principal has no PAT permission by default.
+Fixed in `9777de2` — `git pull` if you're on an older checkout: a
+`databricks_permissions.token_usage` resource with `authorization =
+"tokens"` was added, granting the demo principal `CAN_USE` (and
+preserving it for the built-in `users` group — see the prominent
+warning in [terraform/demo/README.md](terraform/demo/README.md#prerequisites)
+about what this authorization block does to a shared workspace's
+existing token ACL).
+
+**`cannot create grants: User does not have MANAGE on Catalog
+'samples'`:**
+```
+Error: cannot create grants: User does not have MANAGE on Catalog 'samples'.
+  with databricks_grants.samples
+```
+`samples` is a Databricks-managed system catalog; `MANAGE` on it isn't
+held by anyone in a normal account, and it's readable without a grant
+anyway. Fixed in `9777de2` — `git pull` if you're on an older checkout:
+the grant was removed entirely. Nothing at runtime needs it — only
+`setup_workload.sql` references `samples`, and that SQL runs as the
+provisioning identity, not the demo principal.
+
+**`[DELTA_FEATURES_REQUIRE_MANUAL_ENABLEMENT] ... timestampNtz` on the
+`lineitem` `ADD COLUMNS` statement:**
+```
+[16/25] ALTER TABLE migration_demo.tpch.lineitem
+
+❌ TIMESTAMP_NTZ requires DBSQL 2023.35+ or DBR 13.3+.
+   Error: [DELTA_FEATURES_REQUIRE_MANUAL_ENABLEMENT] Your table schema requires manually
+   enablement of the following table feature(s): timestampNtz.
+   Current supported feature(s): appendOnly, deletionVectors, invariants.
+```
+`lineitem` is built via `CREATE TABLE ... AS SELECT` off
+`samples.tpch.lineitem`, so it inherits only that source table's Delta
+features — not the fuller set a freshly-created table gets.
+`TIMESTAMP_NTZ` needs `delta.feature.timestampNtz` enabled explicitly
+on an existing table; Databricks documents that adding such a column
+does **not** enable it automatically. (`orders` was unaffected because
+it's built with an explicit `CREATE TABLE`, which enables features at
+creation time — that's why the `VARIANT` `ADD COLUMN` two statements
+earlier succeeded without issue.) Fixed in `883ea3c` — `git pull` if
+you're on an older checkout: a `SET TBLPROPERTIES
+('delta.feature.timestampNtz' = 'supported')` statement was added
+immediately before the column add.
+**Worth noting if you hit a different `DELTA_FEATURES_REQUIRE_MANUAL_ENABLEMENT`
+error on some other CTAS'd table/feature pair:** the hint the operator
+originally saw here blamed a runtime version floor (DBSQL/DBR), which
+was not the actual cause and pointed in the wrong direction — the
+workspace already supported `TIMESTAMP_NTZ`, the table just hadn't had
+the feature switched on. Where a Databricks error names a version
+floor for a table feature, check whether the table is CTAS'd from
+something older first; an unenabled Delta table feature is easy to
+mistake for a version problem and the fix (`SET TBLPROPERTIES ...
+'supported'`) is much cheaper than a runtime upgrade.
+
 **`databricks-mcp` shows healthy but every tool call errors:**
 Credentials are checked lazily, per call — not at container startup —
 so a healthy container proves the SSE endpoint responds, not that
@@ -460,8 +618,19 @@ run a throwaway `SELECT 1` before benchmarking, or note that query 1's
 number includes cold-start.
 
 **`VARIANT` column rejected / type doesn't exist:**
-Needs DBSQL 2024.35+ or DBR 15.3+. Upgrade the SQL warehouse's channel
-to Current, or use a newer runtime, then re-run `make databricks-setup`.
+`VARIANT` needs DBSQL 2024.35+ or DBR 15.3+ — but don't jump straight
+to a runtime upgrade if the workspace is already on a current enough
+version. `orders` is freshly (re)created right before this statement
+runs, so a version floor is the likely cause here. If you hit the same
+rejection on a table that was instead built by `CREATE TABLE ... AS
+SELECT` from an existing table, it's more likely the
+table-feature-enablement gap described in the `timestampNtz` entry
+above than an actual version problem — Databricks docs say `VARIANT`
+support "is not enabled automatically" on an existing table; the
+remedy there is `ALTER TABLE <table> SET TBLPROPERTIES
+('delta.feature.variantType' = 'supported')`, not a runtime upgrade.
+Once you've ruled that out, upgrade the SQL warehouse's channel to
+Current, or use a newer runtime, then re-run `make databricks-setup`.
 
 **Staged unload refused:**
 The S3 path needs a Unity Catalog **external location** over the
@@ -499,17 +668,44 @@ check with whoever manages the workspace's NCC.
 
 ## Honesty about what's been verified
 
-No live migration has been run end-to-end against a real Databricks
-workspace as part of building this source — that needs a workspace, a
-SQL warehouse, and a token, none of which exist in the environment
-this guide was written in. `terraform apply` has **not** been run for
-either Terraform module; `terraform validate` proves the configuration
-is well-formed, not that an apply succeeds. See each module's README
+Both Terraform modules **have** now been applied against a real
+Databricks account, via `make databricks-provision-workspace` (the
+chained new-environment path): `workspace` created a serverless
+workspace and assigned the admin service principal on the first try,
+with no code changes needed, and chained straight into `demo`. `demo`
+took three attempts — five distinct errors surfaced, four of which
+were defects in this module's code and are now fixed (see
+Troubleshooting above for each: `9777de2` fixed the catalog-creation,
+OBO-token, and `samples`-grant errors; `883ea3c` fixed the
+`timestampNtz` table-feature error). The fifth was a TLS trust-store
+problem on the operator's machine, not a defect in this repo — see the
+TLS entry in Troubleshooting and "Local prerequisites" at the top of
+Phase 0.
+
+`setup_workload.sql` has been exercised through **statement 15 of
+26** (the nested-types `UPDATE` on `lineitem`). Statements 16-26 —
+the new `timestampNtz` enablement, the second `lineitem` `UPDATE`
+(the `TIMESTAMP`/`TIMESTAMP_NTZ` pair), liquid clustering, deletion
+vectors, the `daily_order_summary` materialized view, the two
+`COMMENT`s, and the two `ANALYZE`s — remain **unexercised** against a
+live workspace. Three things that were previously unknowns are now
+resolved: the hand-written `orders` DDL's column types are correct as
+written (statements 8-9 passed unmodified), `VARIANT` is supported on
+a current workspace (statement 12 passed), and creating the catalog
+via SQL rather than a Terraform resource works on a Default Storage
+metastore (statements 1-2 passed). Timing is now measured rather than
+estimated for this slice: statements 1-15 took roughly **90 seconds**
+on a 2X-Small serverless SQL warehouse — one observation on one
+workspace, not a benchmark, and it doesn't cover the remaining
+statements. See each module's README
 (["workspace"](terraform/workspace/README.md),
 ["demo"](terraform/demo/README.md)) for the specific attributes most
 likely to need adjustment on first contact with a real account.
 
-Likewise, `make up-databricks` — Phase 1's very first command — has
+Still not run: any end-to-end migration (Phase 1's dashboard steps and
+all of Phase 2), and any Docker image build for this source.
+
+`make up-databricks` — Phase 1's very first command — has
 not actually been run in this environment: the `databricks-mcp` image
 has not been built, and none of the Compose services have been booted
 under the `databricks` profile. What's been verified is static: the
