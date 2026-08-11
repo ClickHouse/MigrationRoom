@@ -31,6 +31,7 @@ rendering — which LibreChat does display.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import subprocess
 import sys
@@ -42,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 
 WORKSPACE = Path("/workspace")
@@ -52,6 +54,47 @@ HOST = os.environ.get("MCP_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MCP_PORT", "8000"))
 
 mcp = FastMCP("migration-runner", host=HOST, port=PORT)
+
+
+def _threaded(fn):
+    """Run a blocking tool body in a worker thread.
+
+    FastMCP 1.x calls a sync tool with a bare `fn(...)` on the event loop —
+    there is no thread offload on the tool path — so a sync tool freezes the
+    whole server while it runs. That was severe here: `run_python` blocks
+    until the child exits, up to its 3600 s default, and for that entire
+    window nothing else on this server could progress. In particular
+    `tail_python_job` could not be served, which defeats the point of the
+    background+tail pattern, and pings went unanswered so LibreChat could
+    consider the server dead.
+
+    Only the four sync tools are wrapped. `run_python_background` and
+    `tail_python_job` stay on the loop: they are already `async def` doing
+    genuine asyncio I/O, and they are the only touchers of the shared `_JOBS`
+    registry — moving them to threads would introduce a data race where none
+    exists today.
+
+    The wrapped bodies are safe in a thread: each does blocking filesystem
+    work or `subprocess.run`, with no asyncio state involved. `subprocess.run`
+    waits on its own child pid, so it does not compete with asyncio's
+    ThreadedChildWatcher (which waits on the pids it spawned).
+
+    Cancellation keeps anyio's default: if a client gives up, the await does
+    not return until the thread finishes, so no orphaned threads accumulate.
+    The event loop is free either way, which is the property that matters.
+
+    `functools.wraps` is load-bearing — FastMCP derives each tool's JSON
+    schema from `inspect.signature` (which follows `__wrapped__`) and the
+    model-facing description from `__doc__`, while `iscoroutinefunction` sees
+    the async wrapper and takes the awaiting branch. Mirrors `_threaded` in
+    docker/databricks-mcp/server.py; the two images share no code.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any):
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+    return wrapper
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -96,6 +139,7 @@ def _resolve_workspace_path(path: str) -> Path:
 
 
 @mcp.tool()
+@_threaded
 def run_python(code: str, timeout_seconds: int = 3600) -> dict:
     """
     Execute a Python script inside the migration-runner container and
@@ -338,6 +382,7 @@ async def tail_python_job(
 
 
 @mcp.tool()
+@_threaded
 def list_workspace_files() -> list:
     """List files in /workspace (recursive, max depth 3)."""
     files = []
@@ -358,6 +403,7 @@ def list_workspace_files() -> list:
 
 
 @mcp.tool()
+@_threaded
 def read_workspace_file(path: str) -> str:
     """Read a file from /workspace and return its contents as text."""
     resolved = _resolve_workspace_path(path)
@@ -367,6 +413,7 @@ def read_workspace_file(path: str) -> str:
 
 
 @mcp.tool()
+@_threaded
 def write_workspace_file(path: str, content: str) -> dict:
     """Write content to /workspace/<path>, creating parent dirs as needed."""
     resolved = _resolve_workspace_path(path)
