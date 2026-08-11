@@ -593,10 +593,13 @@ Error: cannot create grants: User does not have MANAGE on Catalog 'samples'.
 ```
 `samples` is a Databricks-managed system catalog; `MANAGE` on it isn't
 held by anyone in a normal account, and it's readable without a grant
-anyway. Fixed in `9777de2` — `git pull` if you're on an older checkout:
-the grant was removed entirely. Nothing at runtime needs it — only
-`setup_workload.sql` references `samples`, and that SQL runs as the
-provisioning identity, not the demo principal.
+anyway — **confirmed live**: a full 26-statement `setup_workload.sql`
+run (see the Honesty section below) read `samples.tpch` throughout
+with no grant on `samples` in place, closing what was previously an
+open question. Fixed in `9777de2` — `git pull` if you're on an older
+checkout: the grant was removed entirely. Nothing at runtime needs it —
+only `setup_workload.sql` references `samples`, and that SQL runs as
+the provisioning identity, not the demo principal.
 
 **`[DELTA_FEATURES_REQUIRE_MANUAL_ENABLEMENT] ... timestampNtz` on the
 `lineitem` `ADD COLUMNS` statement:**
@@ -695,9 +698,13 @@ credential.
 The materialized-view augmentation is `@optional` in
 `setup_workload.sql` — it needs a serverless SQL warehouse, and is
 silently skipped on a classic one, which is a perfectly reasonable
-demo environment otherwise. If it's absent, drop sample query 7 (and
-its rewrite in `expected_ch_queries.sql`) rather than treating the
-setup as broken.
+demo environment otherwise. On a serverless warehouse — which is what
+`demo/` Terraform provisions, and so what most partners running this
+guide will have — it succeeds; this has now been confirmed live (see
+the Honesty section below). This caveat only bites a workspace
+configured by hand onto a **classic** warehouse. If that's your case
+and it's absent, drop sample query 7 (and its rewrite in
+`expected_ch_queries.sql`) rather than treating the setup as broken.
 
 **Serverless egress control blocking the staging bucket:**
 If the workspace has a network connectivity configuration (NCC)
@@ -725,34 +732,46 @@ problem on the operator's machine, not a defect in this repo — see the
 TLS entry in Troubleshooting and "Local prerequisites" at the top of
 Phase 0.
 
-`setup_workload.sql` has been exercised through **statement 15 of
-26** (the nested-types `UPDATE` on `lineitem`). Statements 16-26 —
-the new `timestampNtz` enablement, the second `lineitem` `UPDATE`
-(the `TIMESTAMP`/`TIMESTAMP_NTZ` pair), liquid clustering, deletion
-vectors, the `daily_order_summary` materialized view, the two
-`COMMENT`s, and the two `ANALYZE`s — remain **unexercised** against a
-live workspace. Three things that were previously unknowns are now
+`setup_workload.sql` now **completes all 26 statements** against a
+live, serverless SQL warehouse — a later live run pushed past the
+previous checkpoint of statement 15 of 26. Evidence: `describe_table`
+on `lineitem` shows Delta features `clustering`, `deletionVectors`,
+`timestampNtz`, `rowTracking`, and `v2Checkpoint`, with
+`clusteringColumns = [l_shipdate, l_suppkey]` — proof statements 16-21
+(the `timestampNtz` enablement, the `TIMESTAMP`/`TIMESTAMP_NTZ`
+`UPDATE`, liquid clustering, and deletion vectors) all landed. And
+`daily_order_summary` exists with `table_type = MATERIALIZED_VIEW` —
+proof statement 22 (the `@optional` materialized view) succeeded
+rather than being skipped, because this run was against a **serverless**
+SQL warehouse; see the adjusted Troubleshooting wording above for what
+that means for a classic warehouse. The two `COMMENT`s and two
+`ANALYZE`s (statements 23-26) ran without incident. Three things that
+were previously unknowns from the statement-15 checkpoint are also
 resolved: the hand-written `orders` DDL's column types are correct as
 written (statements 8-9 passed unmodified), `VARIANT` is supported on
 a current workspace (statement 12 passed), and creating the catalog
 via SQL rather than a Terraform resource works on a Default Storage
-metastore (statements 1-2 passed). Timing is now measured rather than
-estimated for this slice: statements 1-15 took roughly **90 seconds**
-on a 2X-Small serverless SQL warehouse — one observation on one
-workspace, not a benchmark, and it doesn't cover the remaining
-statements. See each module's README
-(["workspace"](terraform/workspace/README.md),
+metastore (statements 1-2 passed). Timing for statements 1-15 was
+roughly **90 seconds** on a 2X-Small serverless SQL warehouse — one
+observation on one workspace, not a benchmark; timing for the full
+26-statement run has not separately been isolated. See each module's
+README (["workspace"](terraform/workspace/README.md),
 ["demo"](terraform/demo/README.md)) for the specific attributes most
 likely to need adjustment on first contact with a real account.
 
-Still not run: any end-to-end migration (Phase 1's dashboard steps and
-all of Phase 2), and any Docker image build for this source.
+`make up-databricks` — Phase 1's very first command — **has** now been
+exercised: the `databricks-mcp` image builds, and the container
+reaches `healthy` under the `databricks` Compose profile. All five MCP
+tools have been called against the live workspace and work:
+`list_catalogs`, `list_schemas`, `list_tables` (including a fix — see
+[server.py](../../docker/databricks-mcp/server.py) — for two
+Databricks-internal materialization/event-log tables this call
+initially leaked alongside `daily_order_summary`), `describe_table`,
+and `run_select_query`.
 
-`make up-databricks` — Phase 1's very first command — has
-not actually been run in this environment: the `databricks-mcp` image
-has not been built, and none of the Compose services have been booted
-under the `databricks` profile. What's been verified is static: the
-Dockerfile, compose service definition, and profile gating are
-consistent with the other sources' equivalents, and `docker compose
-config` accepts them. Whether the image builds cleanly and the
-container reaches `healthy` has not been exercised.
+Still not run: any end-to-end migration through Phase 1's dashboard
+steps and all of Phase 2, and `terraform destroy` for either module.
+The `workspace/` module's `var.create_metastore = true` branch
+(creating a new metastore, rather than looking up an existing one) also
+remains unexercised — the live run above hit an account that already
+had a metastore, so only the lookup path ran.

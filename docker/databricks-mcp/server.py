@@ -22,6 +22,7 @@ Environment:
 from __future__ import annotations
 
 import os
+import re
 from contextlib import contextmanager
 from typing import Any
 
@@ -30,6 +31,38 @@ from mcp.server.fastmcp import FastMCP
 from sql_guard import SqlNotAllowed, guard
 
 mcp = FastMCP("databricks-source")
+
+# Materialized views (and streaming tables) in Unity Catalog are backed by a
+# pipeline that creates its own internal tables *in the same schema as the
+# view* — Databricks' docs confirm these "appear in
+# system.information_schema.tables but are not visible in Catalog Explorer
+# or other workspace UI surfaces." There is no documented metadata column
+# (no is_internal flag, and table_type is plain "MANAGED" like any other
+# managed table) that distinguishes them from real user tables, so a
+# name-based filter is the only signal information_schema.tables offers.
+#
+# Observed live against `migration_demo.tpch` (2026-08-06), backing
+# `daily_order_summary`, a serverless materialized view:
+#   __materialization_mat_722efdfe_b99a_4f8b_b06e_9cc1f8de6d68_daily_order_summary_1
+#   event_log_722efdfe_b99a_4f8b_b06e_9cc1f8de6d68
+# Both names are suffixed with the pipeline's UUID (hyphens become
+# underscores, since table names can't contain hyphens). The pattern below
+# requires that UUID shape rather than matching any `event_log*` or
+# `__materialization*` prefix, so a legitimate user table such as
+# `event_log_orders` or `__materialization_notes` is never hidden — only
+# names carrying an actual 8-4-4-4-12 hex UUID segment match.
+_UUID = r"[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}"
+_MV_PIPELINE_INTERNAL_RE = re.compile(
+    rf"^(?:__materialization_mat_{_UUID}_.+_\d+|event_log_{_UUID})$"
+)
+
+
+def _is_mv_pipeline_internal(table_name: str) -> bool:
+    """True for a materialized-view/streaming-table pipeline's own backing
+    materialization table or event log — Databricks implementation detail,
+    not user data. See the comment on `_MV_PIPELINE_INTERNAL_RE` above.
+    """
+    return bool(_MV_PIPELINE_INTERNAL_RE.match(table_name or ""))
 
 
 def _host() -> str:
@@ -111,6 +144,11 @@ def list_schemas(catalog: str) -> list[dict[str, Any]]:
 def list_tables(catalog: str, schema: str) -> list[dict[str, Any]]:
     """List tables in `catalog`.`schema` with Delta size metadata.
 
+    Excludes a materialized view/streaming table's own backing
+    materialization table and event log (see `_is_mv_pipeline_internal`) —
+    Databricks implementation detail an agent should not inventory or try to
+    migrate. The `MATERIALIZED_VIEW` row itself is kept.
+
     Row counts are NOT included: Delta metadata doesn't carry them and a
     per-table COUNT(*) would make this call slow. Get them with one
     UNION ALL count query via run_select_query instead.
@@ -125,6 +163,10 @@ def list_tables(catalog: str, schema: str) -> list[dict[str, Any]]:
             [catalog, schema],
         )
         tables = _rows(cur)
+        tables = [
+            row for row in tables
+            if not _is_mv_pipeline_internal(row.get("table_name", ""))
+        ]
         for row in tables:
             row["sizeInBytes"] = None
             row["numFiles"] = None
