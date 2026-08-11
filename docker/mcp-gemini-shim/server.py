@@ -19,6 +19,11 @@ Configuration via environment:
     SHIM_NAME          MCP server name advertised to clients (default: gemini-shim)
     MCP_HOST           bind host (default: 0.0.0.0)
     MCP_PORT           bind port (default: 8000)
+    MCP_ALLOWED_HOSTS  comma-separated Host header allow-list for the SSE
+                       transport's DNS-rebinding protection. Defaults to
+                       loopback only; every instance must add the compose
+                       service name its clients dial (see docker-compose.yml),
+                       because this image is generic and cannot know it.
 """
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
@@ -193,7 +199,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 
 # ── SSE transport via Starlette ───────────────────────────────────────
-sse_transport = SseServerTransport("/messages/")
+# Without security_settings the SDK enforces DNS-rebinding protection against
+# an EMPTY allow-list, so every Host header is rejected with 421 — including
+# the compose service name LibreChat dials. The failure is silent from the
+# healthcheck's point of view, since that probes localhost. Protection stays
+# on (see docker/databricks-mcp/server.py for the reasoning); the allow-list
+# is supplied per instance because this image is source-agnostic.
+_ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get("MCP_ALLOWED_HOSTS", "localhost:*,127.0.0.1:*").split(",")
+    if h.strip()
+]
+
+sse_transport = SseServerTransport(
+    "/messages/",
+    security_settings=TransportSecuritySettings(
+        allowed_hosts=_ALLOWED_HOSTS,
+        allowed_origins=[f"http://{h}" for h in _ALLOWED_HOSTS]
+        + [f"https://{h}" for h in _ALLOWED_HOSTS],
+    ),
+)
 
 
 async def handle_sse(request) -> None:

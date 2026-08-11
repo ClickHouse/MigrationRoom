@@ -183,6 +183,10 @@ services:
     environment:
       UPSTREAM_MCP_URL: "http://snowflake-source:8000/sse"
       SHIM_NAME: "snowflake-source"
+      # The SSE transport rejects any Host not listed here (421). LibreChat
+      # dials this service by its compose name, so that name must appear;
+      # loopback keeps the healthcheck below working.
+      MCP_ALLOWED_HOSTS: "snowflake-source-shim:*,localhost:*,127.0.0.1:*"
     ports:
       - "8014:8000"
     # Wait for the upstream to be HEALTHY (not just started) before
@@ -194,7 +198,12 @@ services:
       snowflake-source:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request, sys; r=urllib.request.urlopen('http://localhost:8000/sse', timeout=2); sys.exit(0 if r.status == 200 else 1)"]
+      # Dial our own compose name rather than localhost: the SDK's SSE
+      # transport validates the Host header, so a localhost probe passes
+      # while LibreChat (which connects by service name) gets a 421. Probing
+      # the real name makes that misconfiguration show as unhealthy instead
+      # of silently healthy.
+      test: ["CMD", "python", "-c", "import urllib.request, sys; r=urllib.request.urlopen('http://snowflake-source-shim:8000/sse', timeout=2); sys.exit(0 if r.status == 200 else 1)"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -268,7 +277,12 @@ services:
     # deliberate, so a credential typo surfaces as a clear tool error in
     # chat rather than a container that won't start.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/sse', timeout=2).status == 200 else 1)"]
+      # Dial our own compose name rather than localhost: the SDK's SSE
+      # transport validates the Host header, so a localhost probe passes
+      # while LibreChat (which connects by service name) gets a 421. Probing
+      # the real name makes that misconfiguration show as unhealthy instead
+      # of silently healthy.
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://databricks-mcp:8000/sse', timeout=2).status == 200 else 1)"]
       interval: 5s
       timeout: 5s
       retries: 20

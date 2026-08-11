@@ -501,6 +501,35 @@ admin — either has `MANAGE` on the catalog.
 
 ## Troubleshooting
 
+**`databricks-mcp` reports `healthy`, but the agent has no Databricks
+tools.** LibreChat's log shows a 421 and a circuit breaker:
+```
+[MCP][databricks-source] Connection failed: SSE error: Non-200 status code (421)
+[MCP][databricks-source] Circuit breaker: too many failures, backing off for 30000ms
+[MCP] Initialized with 4 configured servers and 12 tools.
+```
+The MCP SDK's SSE transport enforces DNS-rebinding protection, and its
+default `allowed_hosts` list is **empty** — so it answers 421
+("Misdirected Request") to every `Host` header. The container still
+looks fine because the healthcheck dials `localhost`, while LibreChat
+dials `http://databricks-mcp:8000/sse`; a green container beside a
+toolless agent is the signature of this bug. Fixed in this repo by
+passing an explicit allow-list (`MCP_ALLOWED_HOSTS`, default
+`databricks-mcp:*,localhost:*,127.0.0.1:*`) and by pointing the
+healthcheck at the service name so the misconfiguration can no longer
+hide. Protection is left **on**: compose publishes the port to the host
+(`8008:8000`), so a page in your browser can reach the server, and the
+allow-list is what stops it — an attacker-controlled name resolving to
+127.0.0.1 arrives as `evil.example:8008` and is rejected. If you rename
+the service or put the MCP behind a different hostname, add that name
+to `MCP_ALLOWED_HOSTS`. Verify with:
+```bash
+docker compose logs librechat | grep "databricks-source"   # want "Tools: list_catalogs, ..."
+```
+Note that `clickhousectl-mcp` and `clickhouse-oss-mcp` are unaffected:
+they run the standalone `fastmcp` package, which has no such
+middleware, rather than the SDK's bundled `mcp.server.fastmcp`.
+
 **The workload step hangs for 15 minutes, then fails with a TLS
 certificate error:**
 ```

@@ -18,6 +18,8 @@ Environment:
     DATABRICKS_TOKEN        required — PAT for a read-only principal
     DATABRICKS_NAMESPACE    optional — "<catalog>.<schema>" default scope
     MCP_PORT                optional — default 8000
+    MCP_ALLOWED_HOSTS       optional — comma-separated Host allow-list,
+                            default "databricks-mcp:*,localhost:*,127.0.0.1:*"
 """
 from __future__ import annotations
 
@@ -27,10 +29,45 @@ from contextlib import contextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from sql_guard import SqlNotAllowed, guard
 
-mcp = FastMCP("databricks-source")
+# The SDK's SSE transport enforces DNS-rebinding protection, and its default
+# allow-list is EMPTY — every Host header is rejected with 421 except none.
+# That default is wrong for us in a way that hides itself: the healthcheck
+# probes `localhost:8000`, so an unconfigured server reports *healthy* while
+# LibreChat's `http://databricks-mcp:8000/sse` gets a 421 and the agent ends
+# up with no Databricks tools.
+#
+# Protection stays ON rather than being switched off: compose publishes this
+# port to the host (8008:8000), so a page in the user's browser can reach it,
+# which is precisely the attack DNS-rebinding protection exists to stop. An
+# allow-list still blocks it — an attacker-controlled name resolving to
+# 127.0.0.1 arrives as `evil.example:8008` and fails — while admitting the
+# three names that legitimately address this server. `host:*` accepts any
+# port on that host; it does not widen the set of hosts.
+#
+# Note this differs from clickhousectl-mcp, which runs the standalone
+# `fastmcp` package (no such middleware) rather than the SDK's bundled one.
+_DEFAULT_ALLOWED_HOSTS = "databricks-mcp:*,localhost:*,127.0.0.1:*"
+_ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get("MCP_ALLOWED_HOSTS", _DEFAULT_ALLOWED_HOSTS).split(",")
+    if h.strip()
+]
+
+mcp = FastMCP(
+    "databricks-source",
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=_ALLOWED_HOSTS,
+        # Origin is absent on LibreChat's server-side requests (absent passes).
+        # Mirroring the host list keeps a browser-based MCP inspector working
+        # without admitting a cross-origin caller.
+        allowed_origins=[f"http://{h}" for h in _ALLOWED_HOSTS]
+        + [f"https://{h}" for h in _ALLOWED_HOSTS],
+    ),
+)
 
 # Materialized views (and streaming tables) in Unity Catalog are backed by a
 # pipeline that creates its own internal tables *in the same schema as the
