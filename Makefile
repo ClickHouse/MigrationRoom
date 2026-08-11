@@ -1,4 +1,12 @@
-.PHONY: setup up up-snowflake up-bigquery up-databricks down reset reset-agent health logs pull diagram snowflake-setup snowflake-provision bigquery-provision databricks-setup databricks-provision databricks-provision-workspace tpch-data tpch-load-bigquery tpch-load-postgres tpch-load-clickhouse-oss migration-status
+.PHONY: setup up up-all up-snowflake up-bigquery up-databricks down reset reset-agent health logs pull diagram snowflake-setup snowflake-provision bigquery-provision databricks-setup databricks-provision databricks-provision-workspace tpch-data tpch-load-bigquery tpch-load-postgres tpch-load-clickhouse-oss migration-status
+
+# Single source of truth for "every Compose profile that exists". Every
+# source (bundled or cloud) is profile-gated (see docker-compose.yml), so
+# anything that needs to address ALL of them — `down`, `reset` (volume
+# teardown), `up-all` — reads this instead of re-listing profiles inline.
+# Adding a 6th source means updating this line only; `down`/`reset` can't
+# silently fall behind again.
+ALL_PROFILES := postgres,clickhouse-oss,snowflake,bigquery,databricks
 
 setup:
 	@echo "Setting up MigrationRoom..."
@@ -109,6 +117,29 @@ up-databricks:
 	@echo "If databricks-mcp shows unhealthy, check: docker compose logs databricks-mcp"
 	@echo "(DATABRICKS_HOST / DATABRICKS_HTTP_PATH / DATABRICKS_TOKEN in .env must be set.)"
 
+# Whole-stack target for local development/testing: every source at once.
+# Not the default (`make up`) — partners doing a real migration only need
+# one source — but useful when working on MigrationRoom itself.
+up-all: export COMPOSE_PROFILES := $(ALL_PROFILES)
+up-all:
+	@bash scripts/check-env.sh
+	@echo "Regenerating librechat.runtime.yaml for active profiles: $(ALL_PROFILES)"
+	@bash scripts/build-librechat-runtime.sh
+	@echo "Pulling images..."
+	docker compose pull
+	@echo "Building custom containers..."
+	docker compose build
+	@echo "Starting every source (postgres, clickhouse-oss, snowflake, bigquery, databricks)..."
+	docker compose up -d
+	@echo ""
+	@echo "Container status:"
+	@docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+	@echo ""
+	@echo "First run: allow 5–10 min — Postgres seeds ~10M rows, ClickHouse OSS ~12.2M."
+	@echo "Watch: docker compose logs postgres -f / docker compose logs clickhouse-oss -f"
+	@echo "Cloud sources (Snowflake/BigQuery/Databricks) need their credentials in .env"
+	@echo "or will simply show unhealthy — see up-snowflake/up-bigquery/up-databricks."
+
 databricks-setup:
 	@echo "Installing setup dependencies (databricks-sql-connector)…"
 	@python3 -m pip install --quiet -r sources/databricks/scripts/requirements.txt
@@ -189,10 +220,10 @@ tpch-load-clickhouse-oss: tpch-data
 	  python3 workloads/tpch/clickhouse-oss/load.py
 
 down:
-	docker compose --profile snowflake --profile bigquery --profile databricks down
+	COMPOSE_PROFILES=$(ALL_PROFILES) docker compose down
 
 reset:
-	@bash scripts/reset.sh
+	@ALL_PROFILES=$(ALL_PROFILES) bash scripts/reset.sh
 
 reset-agent:
 	@bash scripts/reset-agent.sh

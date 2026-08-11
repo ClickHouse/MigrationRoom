@@ -700,6 +700,7 @@ make up                    # start the playground (Postgres + ClickHouse OSS sou
 make up-snowflake          # also start the Snowflake source MCP + Gemini shim
 make up-bigquery           # also start the BigQuery source MCP
 make up-databricks         # also start the Databricks source MCP (databricks-mcp)
+make up-all                # start every source at once (dev/testing only — not the partner-facing default)
 make snowflake-setup       # set up MIGRATION_DEMO.RETAIL workload in existing Snowflake (Path A)
 make snowflake-provision   # provision a fresh Snowflake demo env with Terraform (Path B)
 make databricks-setup      # seed migration_demo.tpch in an existing Databricks workspace (manual entry path)
@@ -718,7 +719,9 @@ make logs                  # tail all service logs
 make diagram               # regenerate docs/architecture.png from docs/architecture.mmd
 ```
 
-`up` / `up-snowflake` / `up-bigquery` / `up-databricks` each run [`scripts/check-env.sh`](../scripts/check-env.sh) first, which hard-fails with the missing variable names if `.env` is absent or missing `JWT_SECRET` / `JWT_REFRESH_SECRET` / `CREDS_KEY` / `CREDS_IV`.
+`up` / `up-snowflake` / `up-bigquery` / `up-databricks` / `up-all` each run [`scripts/check-env.sh`](../scripts/check-env.sh) first, which hard-fails with the missing variable names if `.env` is absent or missing `JWT_SECRET` / `JWT_REFRESH_SECRET` / `CREDS_KEY` / `CREDS_IV`.
+
+`down` and `reset` always tear down (and, for `reset`, destroy volumes for) every profile — `postgres`, `clickhouse-oss`, `snowflake`, `bigquery`, `databricks` — regardless of which one is currently active, via the Makefile's `ALL_PROFILES` variable. That's deliberate: a profile-gated service that `down`/`reset` didn't know about would be left running (or its volume never destroyed).
 
 ### Optional: LLM tracing with Langfuse
 

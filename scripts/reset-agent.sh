@@ -39,12 +39,22 @@ echo "✅ Agents deleted. Re-running librechat-init to recreate…"
 # Auto-detect active profiles from currently-running services so the init
 # container recreates the same agent set the partner is actually using.
 # If they had `make up-snowflake` going, we want the Snowflake agent back.
-# Caller can still override by exporting COMPOSE_PROFILES before invoking.
+# postgres/clickhouse-oss are included here too — they're Compose-profile-
+# gated the same as the cloud sources, so skipping them here would mean
+# librechat-init deletes their agents even though the containers are
+# still running. Caller can still override by exporting COMPOSE_PROFILES
+# before invoking.
 if [ -z "${COMPOSE_PROFILES:-}" ]; then
     detected=""
     running=$(docker compose ps --services --status running 2>/dev/null || true)
+    if grep -q '^postgres$' <<<"$running"; then
+        detected="postgres"
+    fi
+    if grep -q '^clickhouse-oss$' <<<"$running"; then
+        detected="${detected:+$detected,}clickhouse-oss"
+    fi
     if grep -q '^snowflake-source$' <<<"$running"; then
-        detected="snowflake"
+        detected="${detected:+$detected,}snowflake"
     fi
     if grep -q '^bigquery-source$' <<<"$running"; then
         detected="${detected:+$detected,}bigquery"
