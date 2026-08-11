@@ -145,3 +145,135 @@ def test_server_ms_from_history_api_returns_none_on_malformed_response(
     )
 
     assert src._server_ms_from_history_api("stmt-id-123") is None
+
+
+# ── iter_batches value normalisation ─────────────────────────────────────
+#
+# The connector returns ARRAY<...> columns as numpy.ndarray while every other
+# type arrives as a plain Python object. That difference is invisible until
+# something truth-tests the value, and `if events:` is the most natural thing
+# to write — it raises "ValueError: The truth value of an array with more than
+# one element is ambiguous". A real migration died on lineitem's
+# ARRAY<STRUCT<...>> column at row 0 for exactly this reason, so iter_batches
+# hands downstream code ordinary Python values.
+
+
+class _FakeCursor:
+    """Minimal DB-API cursor over canned rows, with Databricks' `description`
+    shape: (name, declared_type, ...)."""
+
+    def __init__(self, description, rows):
+        self.description = description
+        self._rows = list(rows)
+        self.closed = False
+
+    def execute(self, query, *args):
+        self.query = query
+
+    def fetchmany(self, n):
+        chunk, self._rows = self._rows[:n], self._rows[n:]
+        return chunk
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeConn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+def _source_with(cursor):
+    src = DatabricksSource.__new__(DatabricksSource)  # bypass __init__/connect
+    src._conn = _FakeConn(cursor)
+    return src
+
+
+def test_iter_batches_converts_numpy_arrays_to_lists():
+    numpy = pytest.importorskip("numpy")
+    events = numpy.array([{"status": "PACKED"}, {"status": "SHIPPED"}], dtype=object)
+    cursor = _FakeCursor(
+        [("L_ORDERKEY", "bigint"), ("L_SHIPPING_EVENTS", "array")],
+        [(1, events)],
+    )
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+
+    value = batches[0][0]["l_shipping_events"]
+    assert isinstance(value, list), f"expected list, got {type(value).__name__}"
+    assert value == [{"status": "PACKED"}, {"status": "SHIPPED"}]
+    # The whole point: this is what the agent writes and it must not raise.
+    assert bool(value) is True
+
+
+def test_iter_batches_leaves_null_arrays_as_none():
+    cursor = _FakeCursor(
+        [("L_ORDERKEY", "bigint"), ("L_SHIPPING_EVENTS", "array")],
+        [(1, None)],
+    )
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+    assert batches[0][0]["l_shipping_events"] is None
+
+
+def test_iter_batches_normalises_arrays_nested_inside_arrays():
+    numpy = pytest.importorskip("numpy")
+    inner = numpy.array([1, 2], dtype=object)
+    outer = numpy.array([inner], dtype=object)
+    cursor = _FakeCursor([("L_NESTED", "array")], [(outer,)])
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+    assert batches[0][0]["l_nested"] == [[1, 2]]
+
+
+def test_iter_batches_does_not_touch_non_array_columns():
+    """Only ARRAY columns are rewritten — everything else passes through
+    untouched, so the conversion costs nothing on ordinary columns."""
+    sentinel = object()
+    cursor = _FakeCursor(
+        [("L_ORDERKEY", "bigint"), ("L_COMMENT", "string")],
+        [(1, sentinel)],
+    )
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+    assert batches[0][0]["l_comment"] is sentinel
+
+
+def test_iter_batches_converts_maps_to_dicts():
+    """Databricks returns MAP as a list of pairs; ClickHouse's Map wants a
+    mapping, and clickhouse-connect raises "'list' object has no attribute
+    'keys'" on the list form."""
+    cursor = _FakeCursor(
+        [("L_ORDERKEY", "bigint"), ("L_ATTRIBUTES", "map")],
+        [(1, [("carrier", "UPS"), ("fragile", "false")])],
+    )
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+    assert batches[0][0]["l_attributes"] == {"carrier": "UPS", "fragile": "false"}
+
+
+def test_iter_batches_leaves_null_maps_as_none():
+    cursor = _FakeCursor([("L_ATTRIBUTES", "map")], [(None,)])
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+    assert batches[0][0]["l_attributes"] is None
+
+
+def test_iter_batches_leaves_an_empty_map_as_an_empty_dict():
+    cursor = _FakeCursor([("L_ATTRIBUTES", "map")], [([],)])
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+    assert batches[0][0]["l_attributes"] == {}
+
+
+def test_map_conversion_does_not_reinterpret_non_pair_shapes():
+    """A declared map whose value is not a list of pairs is passed through
+    rather than guessed at."""
+    weird = [("a", 1, 2), ("b", 3, 4)]
+    cursor = _FakeCursor([("L_ATTRIBUTES", "map")], [(weird,)])
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+    assert batches[0][0]["l_attributes"] == weird
+
+
+def test_array_of_two_field_structs_is_not_turned_into_a_map():
+    """An ARRAY column is normalised by the array path, never the map path —
+    so an array of 2-tuples stays a list."""
+    cursor = _FakeCursor([("L_PAIRS", "array")], [([("a", 1), ("b", 2)],)])
+    batches = list(_source_with(cursor).iter_batches("SELECT *", 10))
+    assert batches[0][0]["l_pairs"] == [("a", 1), ("b", 2)]

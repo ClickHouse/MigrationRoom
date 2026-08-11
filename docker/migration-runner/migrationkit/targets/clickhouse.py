@@ -128,11 +128,29 @@ class ClickHouseTarget:
         itself. This eliminates an entire class of mid-migration
         failures (schema cache races, qualified-name miss, partial
         DDL visibility) at their structural root: the contract is
-        "validate up front, fail loudly", not "trust then catch"."""
+        "validate up front, fail loudly", not "trust then catch".
+
+        ALIAS and MATERIALIZED columns are excluded, because ClickHouse
+        computes them and rejects an INSERT that supplies them. Leaving them
+        in the map made every source-side generated column a landmine: the
+        row arrives carrying `o_orderyear`, the map matches it to the target's
+        ALIAS column, and the insert fails. Excluding them here means
+        `insert_batch`'s existing "no matching target column → drop" rule
+        handles the value, which is the correct outcome for both kinds — the
+        target recomputes an ALIAS on read and a MATERIALIZED on write, so
+        the source's copy is redundant either way.
+
+        This matters because the migration instructions actively steer the
+        agent toward `MATERIALIZED`/`ALIAS` for generated columns. Without
+        this filter, taking that advice forces every generated column to be
+        hand-deleted in a `transform=`, which is exactly the boilerplate this
+        framework exists to remove. DEFAULT columns are kept: they are
+        insertable, and the default only applies when a value is absent."""
         try:
             rows = self._client.query(
                 "SELECT name FROM system.columns "
                 "WHERE database = {db:String} AND table = {tbl:String} "
+                "  AND default_kind NOT IN ('ALIAS', 'MATERIALIZED') "
                 "ORDER BY position",
                 parameters={"db": database, "tbl": table},
             ).result_rows

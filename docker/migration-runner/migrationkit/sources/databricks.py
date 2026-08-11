@@ -139,6 +139,75 @@ class DatabricksSource(Source):
         finally:
             cur.close()
 
+    @staticmethod
+    def _to_python(value: Any) -> Any:
+        """Recursively replace numpy arrays with lists.
+
+        The connector returns `ARRAY<...>` columns as `numpy.ndarray` while
+        every other Databricks type arrives as an ordinary Python object
+        (`DECIMAL` → Decimal, `MAP` → list of tuples, `TIMESTAMP` → datetime).
+        That single inconsistency is invisible until something treats the
+        value as a normal sequence, and the most natural line anyone writes —
+
+            if row["l_shipping_events"]:
+
+        — raises "ValueError: The truth value of an array with more than one
+        element is ambiguous". A real migration died exactly there, on
+        lineitem's ARRAY<STRUCT<...>> column, before moving a single row.
+
+        Since the migration scripts here are written by an LLM against a
+        schema it discovers at runtime, a type that breaks the obvious idiom
+        is a trap that will be re-sprung indefinitely. Normalising at the
+        source boundary is what stops that: transforms, `json.dumps`, and the
+        ClickHouse insert path all then see plain Python values.
+
+        Recurses because `.tolist()` on an object-dtype array only unwraps the
+        outermost level — an ARRAY of ARRAY would leave inner ndarrays behind.
+        """
+        if isinstance(value, list):
+            return [DatabricksSource._to_python(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(DatabricksSource._to_python(v) for v in value)
+        if isinstance(value, dict):
+            return {k: DatabricksSource._to_python(v) for k, v in value.items()}
+        # Duck-typed rather than importing numpy: the connector pulls numpy in
+        # transitively, but migrationkit does not depend on it directly, and a
+        # hard import would make this module fail without it.
+        tolist = getattr(value, "tolist", None)
+        if tolist is not None and hasattr(value, "dtype"):
+            return DatabricksSource._to_python(tolist())
+        return value
+
+    @staticmethod
+    def _map_to_dict(value: Any) -> Any:
+        """Turn the connector's `MAP` representation into a dict.
+
+        Databricks returns `MAP<K, V>` as a list of `(key, value)` tuples.
+        ClickHouse's `Map(K, V)` wants a mapping, and clickhouse-connect
+        raises `AttributeError: 'list' object has no attribute 'keys'` on the
+        list form — a message that names neither the column nor the type, so
+        it is genuinely hard to act on.
+
+        Left alone if the shape is not a list of pairs, so a real
+        `ARRAY<STRUCT<...>>` that happens to hold two-field structs is never
+        silently reinterpreted as a map. Only columns whose *declared* type is
+        `map` reach this function anyway.
+
+        Nested maps — a `MAP` inside a `STRUCT`, say — are NOT converted: they
+        arrive as a list of pairs indistinguishable from a genuine array of
+        pairs, and guessing there would be the kind of silent misreading this
+        guard avoids. A table that nests a map inside a struct still needs a
+        `transform=`.
+        """
+        if isinstance(value, dict):
+            return value
+        if not isinstance(value, (list, tuple)):
+            return value
+        pairs = list(value)
+        if all(isinstance(p, (list, tuple)) and len(p) == 2 for p in pairs):
+            return dict((k, v) for k, v in pairs)
+        return value
+
     def iter_batches(
         self, query: str, batch_size: int
     ) -> Iterator[list[dict[str, Any]]]:
@@ -146,11 +215,35 @@ class DatabricksSource(Source):
         try:
             cur.execute(query)
             columns = [c[0].lower() for c in cur.description]
+            # `description` declares the Databricks type, so the fix-ups below
+            # touch only the columns that can need them rather than every
+            # value of every row. Both are connector-representation quirks —
+            # ARRAY arrives as numpy.ndarray, MAP as a list of pairs — and
+            # normalising them here is what lets a generated migration script
+            # call add_table() with no transform at all for tables carrying
+            # ARRAY, ARRAY<STRUCT> or MAP columns.
+            converters: list[tuple[int, Any]] = []
+            for i, col in enumerate(cur.description):
+                declared = str(col[1]).lower()
+                if declared == "array":
+                    converters.append((i, self._to_python))
+                elif declared == "map":
+                    converters.append((i, self._map_to_dict))
             while True:
                 rows = cur.fetchmany(batch_size)
                 if not rows:
                     return
-                yield [dict(zip(columns, row)) for row in rows]
+                if not converters:
+                    yield [dict(zip(columns, row)) for row in rows]
+                    continue
+                batch = []
+                for row in rows:
+                    values = list(row)
+                    for i, convert in converters:
+                        if values[i] is not None:
+                            values[i] = convert(values[i])
+                    batch.append(dict(zip(columns, values)))
+                yield batch
         finally:
             cur.close()
 

@@ -1708,9 +1708,37 @@ mcpServers:
         helper owns namespace splitting and host normalisation.
       - Fully qualify every `source_query=`.
       - Row dict keys are **lower-case**; `iter_batches` lowercases them.
+      - **Complex types need no `transform=`.** The framework already delivers
+        values in the shape ClickHouse wants, so do not write conversion code for
+        them — verified end-to-end against `lineitem` and `orders` with no
+        transform at all:
+
+        | Databricks | arrives as | goes into |
+        |---|---|---|
+        | `ARRAY<T>` | `list` (never a numpy array) | `Array(T)` |
+        | `ARRAY<STRUCT<…>>` | list of dicts | `Array(Tuple(named…))` — dicts are accepted |
+        | `MAP<K,V>` | `dict` | `Map(K,V)` |
+        | `VARIANT` | JSON `str` | `String` or `JSON` |
+        | `DECIMAL` | `Decimal` | `Decimal(p,s)` |
+
+        So `if row["some_array"]:` is safe, and you need neither `.tolist()` nor
+        dict→tuple rewriting nor `json.dumps`.
+      - **Never delete a generated column from the row.** `ALIAS` and
+        `MATERIALIZED` target columns are excluded from the insert automatically,
+        and ClickHouse computes them itself. Writing `del row["o_orderyear"]` is
+        unnecessary.
+      - Use `transform=` only for genuine value-level changes — mapping `None` to a
+        non-Nullable column's default, rescaling a unit, redacting a field. If your
+        transform only reshapes a container or drops a generated column, delete it.
       - `batch_size` ~100k narrow, ~25–50k for rows carrying VARIANT or
         `ARRAY<STRUCT>`. Never above 500k.
-      - **S3 staging requires a Unity Catalog external location** over the
+      - **S3 staging is only available when `STAGING_S3_BUCKET` is set.** Check it
+        before planning a staged table — with it unset, `S3Stage.from_env()` gives
+        you nothing and every table goes down the direct path. Never tell the
+        partner a table "is using the S3 staging path" unless you have confirmed
+        the variable is set; report the path the run actually took, not the one
+        your script would have preferred.
+      - **S3 staging also requires a Unity Catalog external location** over the
         staging bucket with `WRITE FILES` granted. `unload_to_s3` raises a
         message saying exactly that; fall back to `add_table()` per table.
       - **Target column order must match the source** for staged tables — that

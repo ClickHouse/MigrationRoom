@@ -369,31 +369,50 @@ class Migrator:
         self._log(f"▶ {plan.name}: starting")
         batch_n = 0
         offset = 0
-        for batch in self.source.iter_batches(plan.source_query, plan.batch_size):
-            self._check_controls()
-            if plan.transform:
-                batch = [plan.transform(row) for row in batch]
-            t0 = time.monotonic()
-            inserted = self.target.insert_batch(
-                plan.target_table, batch, case_map=plan.case_map
-            )
-            elapsed = round(time.monotonic() - t0, 3)
-            state.record_batch(
-                run_id=self.run_id,
-                table_name=plan.name,
-                batch_n=batch_n,
-                rows=inserted,
-                source_offset=offset,
-                bytes_in=None,
-                bytes_out=None,
-                seconds=elapsed,
-            )
-            offset += inserted
-            batch_n += 1
-            self._log(
-                f"  {plan.name} batch {batch_n}: {inserted} rows in {elapsed}s "
-                f"(total {offset})"
-            )
+        # Mark the table failed before re-raising, the way both staged paths
+        # do. Without this the run row goes to "failed" while the table row
+        # stays "running", and the dashboard reports a live migration at
+        # 0 rows/sec forever — which reads as a hang rather than the error it
+        # is. A transform raising on the first row (the common case) produced
+        # exactly that: "0 done · 1 running · 7 pending" with nothing moving.
+        # MigrationPaused/MigrationCancelled deliberately propagate untouched;
+        # they are control flow, not failure, and the run-level handler owns
+        # the resulting status.
+        try:
+            for batch in self.source.iter_batches(plan.source_query, plan.batch_size):
+                self._check_controls()
+                if plan.transform:
+                    batch = [plan.transform(row) for row in batch]
+                t0 = time.monotonic()
+                inserted = self.target.insert_batch(
+                    plan.target_table, batch, case_map=plan.case_map
+                )
+                elapsed = round(time.monotonic() - t0, 3)
+                state.record_batch(
+                    run_id=self.run_id,
+                    table_name=plan.name,
+                    batch_n=batch_n,
+                    rows=inserted,
+                    source_offset=offset,
+                    bytes_in=None,
+                    bytes_out=None,
+                    seconds=elapsed,
+                )
+                offset += inserted
+                batch_n += 1
+                self._log(
+                    f"  {plan.name} batch {batch_n}: {inserted} rows in {elapsed}s "
+                    f"(total {offset})"
+                )
+        except (MigrationPaused, MigrationCancelled):
+            raise
+        except Exception as e:
+            state.set_table_status(self.run_id, plan.name, "failed")
+            state.write_event(self.run_id, "table_failed",
+                              {"table": plan.name, "error": str(e),
+                               "rows_done": offset, "strategy": "direct"})
+            self._log(f"✗ {plan.name}: failed after {offset} rows — {e}")
+            raise
         state.set_table_status(self.run_id, plan.name, "done")
         state.write_event(self.run_id, "table_done",
                           {"table": plan.name, "total_rows": offset, "strategy": "direct"})
