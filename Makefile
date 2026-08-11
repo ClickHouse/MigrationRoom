@@ -15,21 +15,21 @@ setup:
 	@mkdir -p secrets && [ -f secrets/gcp-key.json ] || echo '{}' > secrets/gcp-key.json
 	@# Seed a runtime librechat.yaml so `docker compose up` works even
 	@# before the user has run one of the up* targets. Defaults to empty
-	@# profiles, which strips snowflake-source, bigquery-source, and
-	@# databricks-mcp.
+	@# profiles, which strips postgres-source, clickhouse-oss-source,
+	@# snowflake-source, bigquery-source, and databricks-source.
 	@COMPOSE_PROFILES="" bash scripts/build-librechat-runtime.sh
 	@echo "✅ Setup complete. Run: make up"
 
-up: export COMPOSE_PROFILES :=
+up: export COMPOSE_PROFILES := postgres,clickhouse-oss
 up:
 	@bash scripts/check-env.sh
-	@echo "Regenerating librechat.runtime.yaml for active profiles: <none>"
+	@echo "Regenerating librechat.runtime.yaml for active profiles: postgres,clickhouse-oss"
 	@bash scripts/build-librechat-runtime.sh
 	@echo "Pulling images..."
 	docker compose pull
 	@echo "Building custom containers..."
 	docker compose build
-	@echo "Starting services..."
+	@echo "Starting services (including postgres, clickhouse-oss)..."
 	docker compose up -d
 	@echo ""
 	@echo "Container status:"

@@ -57,6 +57,9 @@ make up
 docker compose logs postgres -f   # watch seed progress
 ```
 
+`make up` activates the `postgres` Compose profile for you; a bare
+`docker compose up -d` without `COMPOSE_PROFILES` set won't start Postgres.
+
 If you want the TPC-H workload too, run it after `make up` is healthy:
 
 ```bash
