@@ -51,12 +51,76 @@ You have no Databricks workspace at all. Terraform provisions a
 module below — one command, no copy-pasting a workspace URL between
 two applies.
 
-The one manual step: create a Databricks **account** (if you don't
-have one) and, in the account console
-(`accounts.cloud.databricks.com` → Settings → Identity and access →
-Service principals), an **account-admin** service principal. Terraform
-authenticates *as* this service principal, so it cannot also create
-it. Generate an OAuth secret and note the client ID and account UUID.
+The one manual step: create a Databricks **account** (if you don't have
+one) and an **account-admin service principal** inside it. Terraform
+authenticates *as* that service principal, so it cannot also create it.
+
+#### Where each value comes from
+
+`terraform/workspace/terraform.tfvars` needs three values. All three
+come from the **account console** at
+**<https://accounts.cloud.databricks.com>** — not from inside a
+workspace.
+
+| tfvar | Where to get it |
+|---|---|
+| `databricks_account_id` | Account console → click the **down arrow next to your username** (upper right) → copy **Account ID** |
+| `databricks_client_id` | The service principal's **application ID**, shown when you generate its secret (below) |
+| `databricks_client_secret` | Generated once, alongside the client ID (below) |
+
+You must be an **account admin** to reach any of this. If you created
+the account, you already are — the original signup is the account owner
+and is an account admin automatically.
+
+**1. Get the account ID.** In the account console, click the down arrow
+next to your username in the upper-right corner and copy **Account ID**.
+This only appears in the account console — it is *not* displayed
+anywhere inside a workspace, which is a common few-minutes-lost moment.
+
+**2. Create the service principal.** Account console → sidebar →
+**User management** → **Service principals** tab → **Add service
+principal** → give it a name (e.g. `migrationroom-terraform`) → **Add**.
+
+**3. Give it the account admin role.** Still under **User management** →
+**Service principals**, click the service principal you just made →
+**Roles** tab → enable the account admin role. Account admin (not
+workspace admin) is required: the module calls the account API to create
+a workspace, and the chained `demo` apply then needs metastore-level
+`CREATE CATALOG`, which account admins hold implicitly.
+
+> The details page shows only roles assigned **directly**. A role
+> inherited through group membership is active but its toggle will not
+> appear enabled — so don't rely on the toggles to audit this.
+
+**4. Generate the OAuth secret.** With the service principal still
+selected, open the **Credentials & secrets** tab and generate a secret.
+Set a lifetime in days (maximum **730**). Copy **both** the secret and
+the **client ID** before closing the dialog.
+
+> **The secret is displayed exactly once.** If you lose it, generate a
+> new one — a service principal can hold up to five. The client ID is
+> the same value as the service principal's application ID.
+
+The equivalent route from inside a workspace, if you prefer it: your
+username → **Settings** → **Identity and access** → next to **Service
+principals** click **Manage** → select it → **Secrets** tab →
+**Generate secret**. That route can create the secret but *not* read the
+account ID, so you still need step 1 in the account console.
+
+> **Cloud support:** this path is AWS-only. The module targets
+> `accounts.cloud.databricks.com` and creates an AWS serverless
+> workspace with `aws_region`. On GCP the account console lives at a
+> different host, and Azure has no equivalent `databricks_mws_workspaces`
+> flow — use the *existing workspace* path below instead.
+
+> **Databricks Free Edition cannot use this path at all.** Free Edition
+> has "no access to the account console or account-level APIs" and is
+> capped at one workspace and one metastore per account, so there is no
+> account console to collect these three values from and nothing to
+> create. Free Edition users should use the *workload only* path below.
+> Free Edition is also non-commercial-use only.
+
+#### Then run it
 
 ```bash
 cd sources/databricks/terraform/workspace
